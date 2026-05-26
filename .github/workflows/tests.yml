@@ -1,0 +1,41 @@
+name: Tests
+
+# Pure-Python test suite. No display, no psychopy / retro init — these
+# tests cover the pure logic modules (design, savestate, paths, phases,
+# markers, settings, etc.) and run on every push / PR on both Linux and
+# Windows to catch path / encoding / platform regressions early.
+#
+# The display-bound bits (engine, task, session, audio, gui rendering)
+# are NOT covered here — they're verified manually in a VM or on real
+# hardware once per release.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  pytest:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          # Use the same Python version we pin in .python-version.
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Run pure-Python tests
+        # `-k "not integration"` excludes the display-bound smoke test
+        # (none defined yet but the marker is reserved).
+        run: uv run pytest tests/ -k "not integration" -v

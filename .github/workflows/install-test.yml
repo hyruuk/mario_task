@@ -1,0 +1,87 @@
+name: Test Windows install script
+
+# End-to-end smoke test of install.ps1 on a clean Windows runner.
+#
+# What this catches automatically:
+#   - install.ps1 syntax / argument errors
+#   - winget Python / Git / git-annex installs work
+#   - uv sync resolves and installs every Python dep on Windows
+#   - the wxPython / PsychoPy / stable-retro wheels are Windows-compatible
+#   - datalad clones the mario.stimuli repo and fetches the ROM via anonymous HTTPS
+#   - the import smoke test in setup_env.ps1 passes
+#
+# What this does NOT catch:
+#   - psychopy.visual.Window actually opens (needs a display)
+#   - gameplay loop runs (needs display + retro emulator)
+#   - LSL outlet is reachable from another process
+# Those are validated manually in a VM (see docs/install-windows-vm.md).
+#
+# Triggers: every push to main (catch packaging regressions fast) and
+# every version tag (don't ship a broken installer). Also runnable
+# manually from the Actions UI.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  install:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Refresh PATH so winget / git etc. from the runner image are visible
+      # in subsequent steps. (The runner image preinstalls Python, Git, and
+      # winget — install.ps1 detects them and skips the install attempts.)
+      - name: Show runner versions
+        shell: pwsh
+        run: |
+          Write-Host "Python: $(python --version)"
+          Write-Host "Git: $(git --version)"
+          Write-Host "winget: $(winget --version)"
+          Write-Host "PowerShell: $($PSVersionTable.PSVersion)"
+
+      - name: Run install.ps1
+        shell: pwsh
+        # NoProfile and ExecutionPolicy bypass match what install.bat would do.
+        run: |
+          $ErrorActionPreference = "Stop"
+          # install.ps1 expects to live at the root of the extracted ZIP.
+          # In CI the checkout root is exactly that, so we just run it.
+          & .\install.ps1
+
+      - name: Verify install side-effects
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (-not (Test-Path ".venv\Scripts\python.exe")) { throw ".venv missing" }
+          if (-not (Test-Path "data\mario.stimuli\SuperMarioBros-Nes\rom.nes")) { throw "ROM missing" }
+          # ROM file is the iNES header (40976 bytes).
+          $rom = Get-Item "data\mario.stimuli\SuperMarioBros-Nes\rom.nes"
+          if ($rom.Length -ne 40976) { throw "ROM size $($rom.Length) != 40976" }
+          Write-Host "Install verified: venv present, ROM is the real 40976-byte iNES file."
+
+      - name: Smoke-test mario_task imports
+        shell: pwsh
+        run: |
+          .\.venv\Scripts\python.exe -c @"
+          import importlib
+          for m in ['mario_task', 'mario_task.markers', 'mario_task.design',
+                    'mario_task.phases', 'mario_task.settings',
+                    'mario_task.savestate', 'mario_task.paths',
+                    'mario_task.verify', 'mario_task.monitor',
+                    'psychopy', 'retro', 'pylsl', 'wx', 'sounddevice', 'serial']:
+              importlib.import_module(m)
+              print(f'  ok  {m}')
+          "@
+
+      - name: Run pytest (pure-Python tests must pass on Windows)
+        shell: pwsh
+        run: |
+          .\.venv\Scripts\python.exe -m pytest tests/ -k "not integration" -v
