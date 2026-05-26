@@ -27,7 +27,10 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Generator
 
-from psychopy import logging, visual
+# psychopy.visual imports trigger pyglet which needs libGL — fails on
+# headless CI (no display). Push the import inside ``run`` so that just
+# importing this module (e.g. to call ``_append_to_subject_tsv`` from a
+# unit test) doesn't need a graphics stack.
 
 if TYPE_CHECKING:
     from psychopy.visual import Window
@@ -134,6 +137,9 @@ def run(
     session: str | None = None,
     run_idx: int | None = None,
 ) -> Generator[bool, None, None]:
+    # Local import: keeps the module headless-importable for unit tests
+    # that only exercise the file-writing helpers.
+    from psychopy import logging, visual
     """Yield once per frame until the operator submits the questionnaire.
 
     The generator is driven by the parent :meth:`_TaskBase.run` flip loop

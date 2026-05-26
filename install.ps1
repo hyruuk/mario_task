@@ -71,7 +71,7 @@ Direct link to App Installer:
 # ---------------------------------------------------------------------------
 if (-not (Test-Real-Python)) {
     Log "Installing Python 3.10 (via winget, user scope)..."
-    winget install --id Python.Python.3.10 --silent --scope user --accept-package-agreements --accept-source-agreements
+    winget install --id Python.Python.3.10 --source winget --silent --scope user --accept-package-agreements --accept-source-agreements
     if ($LASTEXITCODE -ne 0) {
         Die "Python install via winget failed (exit $LASTEXITCODE). Install manually from https://www.python.org/downloads/ (tick 'Add Python to PATH') and re-run."
     }
@@ -96,7 +96,7 @@ Log "Python: $pythonVer"
 # ---------------------------------------------------------------------------
 if (-not (Has-Command git)) {
     Log "Installing Git (via winget)..."
-    winget install --id Git.Git --silent --accept-package-agreements --accept-source-agreements
+    winget install --id Git.Git --source winget --silent --accept-package-agreements --accept-source-agreements
     if ($LASTEXITCODE -ne 0) {
         Die "Git install via winget failed (exit $LASTEXITCODE). Install manually from https://git-scm.com/download/win and re-run."
     }

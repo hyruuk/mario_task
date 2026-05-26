@@ -90,7 +90,11 @@ Log "uv $(uv --version)"
 if (-not (Get-Command git-annex -ErrorAction SilentlyContinue)) {
     Log "Installing git-annex via winget..."
     try {
-        winget install --id Joey.GitAnnex --silent --accept-package-agreements --accept-source-agreements
+        # --source winget pins to the public winget-pkgs repo. Without
+        # it, winget also searches msstore which requires interactive
+        # terms acceptance (breaks on CI; harmless on real machines but
+        # not worth the variability).
+        winget install --id Joey.GitAnnex --source winget --silent --accept-package-agreements --accept-source-agreements
         if ($LASTEXITCODE -ne 0) { throw "winget exited with $LASTEXITCODE" }
     } catch {
         Die @"

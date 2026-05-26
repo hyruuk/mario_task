@@ -17,12 +17,11 @@ on:
 
 jobs:
   pytest:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-
+    # Linux only — Windows pytest coverage comes from install-test.yml,
+    # which exercises the same suite at the end of the full operator
+    # install flow (after a real `uv sync` with the runner's MSVC
+    # toolchain available for stable-retro's C extension build).
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
