@@ -88,27 +88,45 @@ Log "uv $(uv --version)"
 # 3. Install git-annex (required by datalad for the ROM fetch)
 # ---------------------------------------------------------------------------
 if (-not (Get-Command git-annex -ErrorAction SilentlyContinue)) {
-    Log "Installing git-annex via winget..."
+    # winget for Joey.GitAnnex is unreliable on fresh boxes (the source
+    # database may need re-init) and outright broken on GitHub Actions
+    # runners. Direct download of the official Inno Setup installer is
+    # both simpler and more reliable on every Windows we've tried.
+    $gitAnnexUrl = "https://downloads.kitenet.net/git-annex/windows/current/git-annex-installer.exe"
+    $installer = Join-Path $env:TEMP "git-annex-installer.exe"
+    Log "Downloading git-annex installer from $gitAnnexUrl ..."
     try {
-        # --source winget pins to the public winget-pkgs repo. Without
-        # it, winget also searches msstore which requires interactive
-        # terms acceptance (breaks on CI; harmless on real machines but
-        # not worth the variability).
-        winget install --id Joey.GitAnnex --source winget --silent --accept-package-agreements --accept-source-agreements
-        if ($LASTEXITCODE -ne 0) { throw "winget exited with $LASTEXITCODE" }
+        Invoke-WebRequest -Uri $gitAnnexUrl -OutFile $installer -UseBasicParsing
     } catch {
         Die @"
-winget install of git-annex failed: $_
-Install it manually from
-  https://git-annex.branchable.com/install/Windows/
+Could not download git-annex installer from $gitAnnexUrl
+($_)
+Install it manually from https://git-annex.branchable.com/install/Windows/
 then re-run this script.
 "@
     }
+    Log "Running silent install (this may pop a UAC prompt on real machines)..."
+    # Standard Inno Setup silent flags: VERYSILENT skips all UI;
+    # SUPPRESSMSGBOXES kills the few prompts /VERYSILENT misses;
+    # SP- skips the "this will install" preamble; NORESTART = no reboot.
+    $process = Start-Process -FilePath $installer `
+        -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/SP-","/NORESTART" `
+        -Wait -PassThru
+    Remove-Item $installer -Force -ErrorAction SilentlyContinue
+    if ($process.ExitCode -ne 0) {
+        Die "git-annex installer exited with $($process.ExitCode)."
+    }
     Refresh-Path
-    # Defensive fallback in case the registry hasn't reflected the new
-    # PATH yet (some Windows builds are slow about this).
-    if (-not (Get-Command git-annex -ErrorAction SilentlyContinue)) {
-        $env:Path = "$env:ProgramFiles\Git-Annex\bin;$env:Path"
+    # The installer drops binaries under one of two locations depending
+    # on whether it installed system-wide or per-user. Add both as
+    # fallbacks in case the registry hasn't reflected the change yet.
+    foreach ($p in @(
+        "$env:ProgramFiles\Git-Annex\bin",
+        "$env:LOCALAPPDATA\Programs\Git-Annex\bin"
+    )) {
+        if (Test-Path (Join-Path $p "git-annex.exe")) {
+            $env:Path = "$p;$env:Path"
+        }
     }
     if (-not (Get-Command git-annex -ErrorAction SilentlyContinue)) {
         Die "git-annex installed but not on PATH. Open a new PowerShell window and re-run this script."
