@@ -1,4 +1,4 @@
-# mario_task — Windows installer (PowerShell).
+# mario_task -- Windows installer (PowerShell).
 #
 # Called by install.bat. Installs the prerequisites a Windows machine
 # typically lacks (Python, Git, uv), then hands off to setup_env.ps1
@@ -20,6 +20,24 @@ function Die($msg)  { Write-Host "[x] $msg" -ForegroundColor Red; exit 1 }
 
 function Has-Command($name) {
     return [bool] (Get-Command $name -ErrorAction SilentlyContinue)
+}
+
+# Distinguish a working Python from the Microsoft Store "App Installer
+# stub" that Windows 11 ships at %LOCALAPPDATA%\Microsoft\WindowsApps\python.exe.
+# The stub is on PATH for every user. Running it prints
+#   "Python was not found; run without arguments to install..."
+# and exits non-zero. So `python` LOOKS like it exists but doesn't run.
+# We detect this by actually invoking python and parsing the major version.
+function Test-Real-Python {
+    if (-not (Has-Command python)) { return $false }
+    $out = & python -c "import sys; sys.stdout.write(str(sys.version_info[0]))" 2>&1
+    if ($LASTEXITCODE -ne 0) { return $false }
+    if ($out -match "Microsoft Store|not found|disabled") { return $false }
+    try {
+        return ([int]$out -ge 3)
+    } catch {
+        return $false
+    }
 }
 
 # Rehash PATH from system + user registries. After winget installs a tool
@@ -51,13 +69,24 @@ Direct link to App Installer:
 # ---------------------------------------------------------------------------
 # 1. Python 3.10+
 # ---------------------------------------------------------------------------
-if (-not (Has-Command python)) {
-    Log "Installing Python 3.10 (via winget)..."
-    winget install --id Python.Python.3.10 --silent --accept-package-agreements --accept-source-agreements
+if (-not (Test-Real-Python)) {
+    Log "Installing Python 3.10 (via winget, user scope)..."
+    winget install --id Python.Python.3.10 --silent --scope user --accept-package-agreements --accept-source-agreements
     if ($LASTEXITCODE -ne 0) {
-        Die "Python install via winget failed (exit $LASTEXITCODE). Install manually from https://www.python.org/downloads/ and re-run."
+        Die "Python install via winget failed (exit $LASTEXITCODE). Install manually from https://www.python.org/downloads/ (tick 'Add Python to PATH') and re-run."
     }
     Refresh-Path
+    # Even after winget installs Python under user scope, the Store stub
+    # at %LOCALAPPDATA%\Microsoft\WindowsApps\ may still be earlier in
+    # PATH than the real Python at %LOCALAPPDATA%\Programs\Python\Python310\.
+    # Force the real one to the front.
+    $pythonRealDir = Join-Path $env:LOCALAPPDATA "Programs\Python\Python310"
+    if (Test-Path (Join-Path $pythonRealDir "python.exe")) {
+        $env:Path = "$pythonRealDir;$pythonRealDir\Scripts;$env:Path"
+    }
+    if (-not (Test-Real-Python)) {
+        Die "Python install completed but `python` still doesn't run. Try opening a NEW PowerShell window and re-running install.bat."
+    }
 }
 $pythonVer = & python --version 2>&1
 Log "Python: $pythonVer"
@@ -92,7 +121,7 @@ if (-not (Has-Command uv)) {
 Log "uv: $(uv --version 2>&1)"
 
 # ---------------------------------------------------------------------------
-# 4. Run setup_env.ps1 — installs git-annex via winget, builds the venv,
+# 4. Run setup_env.ps1 -- installs git-annex via winget, builds the venv,
 #    fetches the ROM via datalad, runs the smoke test.
 # ---------------------------------------------------------------------------
 Log "Running setup_env.ps1 (this is the long step)..."

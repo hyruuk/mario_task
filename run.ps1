@@ -1,4 +1,4 @@
-# run.ps1 — launch the Mario experiment on Windows.
+# run.ps1 -- launch the Mario experiment on Windows.
 #
 # Behaviour mirrors run.sh on Linux.
 #

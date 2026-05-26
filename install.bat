@@ -1,5 +1,5 @@
 @echo off
-REM mario_task — Windows installer.
+REM mario_task -- Windows installer.
 REM
 REM Double-click this file in File Explorer to install everything.
 REM This just launches install.ps1 with the right execution policy;

@@ -1,4 +1,4 @@
-# setup_env.ps1 — first-time install on Windows 10/11.
+# setup_env.ps1 -- first-time install on Windows 10/11.
 #
 # Idempotent: re-running is a no-op after a successful install.
 #
@@ -49,15 +49,24 @@ Direct link: https://www.microsoft.com/store/productId/9NBLGGH4NNS1
 }
 
 # ---------------------------------------------------------------------------
-# 1. Verify Python is available
+# 1. Verify Python is available (and actually works, not just the
+#    Microsoft Store "App Installer" stub that Win 11 ships).
 # ---------------------------------------------------------------------------
-$pythonCmd = Get-Command python -ErrorAction SilentlyContinue
-if (-not $pythonCmd) {
+function Test-Real-Python {
+    if (-not (Get-Command python -ErrorAction SilentlyContinue)) { return $false }
+    $out = & python -c "import sys; sys.stdout.write(str(sys.version_info[0]))" 2>&1
+    if ($LASTEXITCODE -ne 0) { return $false }
+    if ($out -match "Microsoft Store|not found|disabled") { return $false }
+    try { return ([int]$out -ge 3) } catch { return $false }
+}
+if (-not (Test-Real-Python)) {
     Die @"
-Python is not on PATH. Install it first:
-    winget install --id Python.Python.3.10
-or download from https://www.python.org/downloads/.
-Then re-run this script.
+Python is not actually working on PATH. (Note: Windows 11 ships a
+"Microsoft Store stub" at python.exe that LOOKS like Python but isn't.)
+Install real Python first:
+    winget install --id Python.Python.3.10 --scope user
+or download from https://www.python.org/downloads/ (tick "Add Python to PATH").
+Then open a NEW PowerShell window and re-run this script.
 "@
 }
 $pyVer = & python --version 2>&1
@@ -120,11 +129,11 @@ try {
 
 $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
 if (-not (Test-Path $VenvPython)) {
-    Die "Expected $VenvPython after uv sync — install failed."
+    Die "Expected $VenvPython after uv sync -- install failed."
 }
 
 # ---------------------------------------------------------------------------
-# 5. ROM data via datalad (anonymous HTTPS — no SSH key required)
+# 5. ROM data via datalad (anonymous HTTPS -- no SSH key required)
 # ---------------------------------------------------------------------------
 if (-not (Test-Path "$MarioStimuliDir\.git")) {
     Log "Cloning mario.stimuli via datalad (anonymous HTTPS, no credentials)"
@@ -146,7 +155,7 @@ if (-not (Test-Path $MarioRom) -or ((Get-Item $MarioRom).Length -eq 0)) {
 
 if (-not (Test-Path $MarioRom) -or ((Get-Item $MarioRom).Length -eq 0)) {
     Die @"
-rom.nes is still empty after datalad get — the remote mirror may be down.
+rom.nes is still empty after datalad get -- the remote mirror may be down.
 Try manually:
     cd $MarioStimuliDir
     & (Join-Path $VenvDir "Scripts\datalad.exe") get .

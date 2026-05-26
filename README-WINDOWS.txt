@@ -1,4 +1,4 @@
-mario_task — Windows install
+mario_task -- Windows install
 ============================
 
 1.  Double-click  install.bat

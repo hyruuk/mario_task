@@ -39,3 +39,14 @@ jobs:
         # `-k "not integration"` excludes the display-bound smoke test
         # (none defined yet but the marker is reserved).
         run: uv run pytest tests/ -k "not integration" -v
+
+  lint-powershell:
+    runs-on: ubuntu-latest
+    # PowerShell ships built-in on the ubuntu-latest runner image, so no
+    # extra setup needed. We run the same lint script developers use
+    # locally — catches non-ASCII chars + syntax errors before they
+    # reach a Windows machine.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint all .ps1 files
+        run: bash scripts/lint-powershell.sh
