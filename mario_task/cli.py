@@ -1,18 +1,17 @@
-"""Command-line entry point for ``mario_task``.
+"""``mario_task`` command-line entry point.
 
-Phase 0: minimal stub that loads settings (proves the pure-Python core
-imports cleanly) and prints a friendly placeholder. The full CLI lands
-in Phase 1 once ``session.py`` and ``gui.py`` are implemented.
+Phase 1: builds a :class:`RunConfig` from CLI flags + ``config.json`` +
+env vars, then calls :func:`session.run_session` which runs a single
+Level 1-1 attempt for ``max_duration_seconds``.
 
-The Phase 1 contract will be:
+Phase 2 will wrap this with the first-run config wizard (when
+``config.json`` is missing) and the per-session subject picker
+(when no subject/session args are passed).
 
-    1. Parse argparse flags (subject, session, output, eeg-backend, ...).
-    2. Load .env (via ``python-dotenv``).
-    3. ``settings.load(config_path, env, cli_overrides)``.
-    4. If config.json doesn't exist, launch ``gui.run_config_wizard()``,
-       save it, then exit so the operator can verify.
-    5. Otherwise launch ``gui.pick_subject()`` (unless subject/session
-       were passed positionally), then call ``session.run_session(cfg)``.
+Usage:
+    python -m mario_task SUBJECT SESSION
+    python -m mario_task --max-duration 30 sub01 01
+    python -m mario_task --eeg-backend null sub01 01     # dev / no LSL outlet
 """
 
 from __future__ import annotations
@@ -21,21 +20,47 @@ import argparse
 import logging
 import sys
 
+from dotenv import load_dotenv
+
 from mario_task import settings as settings_mod
+from mario_task.paths import BidsPaths, infer_next_session, make_timestamp, normalize_subject
+from mario_task.session import RunConfig, run_session
+
+# Load any .env in cwd so env-var overrides apply.
+load_dotenv()
+
+log = logging.getLogger(__name__)
 
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="mario_task",
-        description="NES Super Mario Bros experiment runner (Phase 0 stub).",
+        description="NES Super Mario Bros experiment runner.",
     )
-    p.add_argument("subject", nargs="?", help="Subject label (e.g. sub01). Optional.")
-    p.add_argument("session", nargs="?", help="Session label (e.g. 01). Optional.")
+    p.add_argument(
+        "subject",
+        nargs="?",
+        default=None,
+        help=(
+            "Subject label, e.g. '01' (BIDS sub- prefix added automatically) "
+            "or 'sub-01' (prefix stripped). If omitted, a GUI picker opens "
+            "showing existing subjects with their progress."
+        ),
+    )
+    p.add_argument(
+        "session",
+        nargs="?",
+        default=None,
+        help=(
+            "Session label (e.g. '002'). If omitted, the next available "
+            "session number for this subject is used."
+        ),
+    )
     p.add_argument(
         "--output",
         dest="output_root",
         default=None,
-        help="Where to write BIDS outputs (overrides config.json).",
+        help="BIDS output root (overrides config.json).",
     )
     p.add_argument(
         "--max-duration",
@@ -55,7 +80,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--eeg-port",
         dest="eeg_port",
         default=None,
-        help="Trigger port (serial/parallel only).",
+        help="Trigger port (required for serial/parallel).",
     )
     p.add_argument(
         "--no-fullscreen",
@@ -66,9 +91,19 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Run in a windowed mode (debug).",
     )
     p.add_argument(
-        "-v", "--verbose",
+        "--reconfigure",
         action="store_true",
-        help="Verbose logging.",
+        help=(
+            "Re-launch the first-run config wizard even if config.json "
+            "already exists. The existing config.json is overwritten "
+            "with whatever you submit; cancel to keep it unchanged."
+        ),
+    )
+    p.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Verbose Python logging (INFO → DEBUG).",
     )
     return p
 
@@ -94,28 +129,59 @@ def main(argv: list[str] | None = None) -> int:
         if v is not None
     }
 
-    cfg = settings_mod.load(
-        config_path=settings_mod.config_path_default(),
+    # First-run wizard: if no config.json exists (or --reconfigure was
+    # passed), open the GUI to collect the operator's trigger / display
+    # / ROM / enabled-levels choices. Cancel → exit 0 with the existing
+    # config.json untouched.
+    config_path = settings_mod.config_path_default()
+    if args.reconfigure or not config_path.exists():
+        from mario_task import gui  # local import: psychopy is heavy
+        reason = "--reconfigure" if args.reconfigure else "no config.json found"
+        log.info("Launching configuration wizard (%s).", reason)
+        if gui.run_config_wizard(config_path) is None:
+            log.info("Config wizard cancelled; exiting.")
+            return 0
+
+    settings = settings_mod.load(
+        config_path=config_path,
         cli_overrides=cli_overrides,
     )
 
-    print("mario_task — Phase 0 stub")
-    print("Loaded settings:")
-    print(f"  trigger backend : {cfg.triggers.backend}")
-    print(f"  trigger port    : {cfg.triggers.port}")
-    print(f"  max duration    : {cfg.task.max_duration_seconds} s")
-    print(f"  discovery       : {'on' if cfg.task.discovery_enabled else 'off'}")
-    print(f"  practice        : {'on' if cfg.task.practice_enabled else 'off'}")
-    print(f"  fullscreen      : {cfg.display.fullscreen}")
-    print(f"  output root     : {cfg.paths.output_root}")
-    if args.subject:
-        print(f"  subject         : {args.subject}")
-    if args.session:
-        print(f"  session         : {args.session}")
-    print()
-    print("Phase 1 (display + retro + GUI wizard) is not yet implemented.")
-    print("To run the unit-test suite: `uv run pytest tests/`.")
-    return 0
+    # Subject-picker GUI: if the operator didn't pass a subject on the
+    # CLI, open the dialog so they can pick from existing subjects (with
+    # progress info) or type a new one. Cancel → exit 0.
+    if args.subject is None:
+        from mario_task import gui
+        picked = gui.pick_subject(settings.paths.output_root)
+        if picked is None:
+            log.info("Subject picker cancelled; exiting.")
+            return 0
+        subject, session = picked
+    else:
+        subject = normalize_subject(args.subject)
+        session = args.session or infer_next_session(settings.paths.output_root, subject)
+
+    paths = BidsPaths(
+        subject=subject,
+        session=session,
+        output_root=settings.paths.output_root,
+        timestamp=make_timestamp(),
+    )
+
+    config = RunConfig(
+        subject=subject,
+        session=session,
+        settings=settings,
+        paths=paths,
+    )
+
+    log.info(
+        "Launching session: sub-%s ses-%s%s (max=%ds, backend=%s)",
+        subject, session,
+        " (auto-detected)" if args.session is None else "",
+        settings.task.max_duration_seconds, settings.triggers.backend,
+    )
+    return run_session(config)
 
 
 if __name__ == "__main__":

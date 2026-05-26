@@ -63,30 +63,32 @@ def test_design_columns_are_world_and_level() -> None:
 
 
 def test_ensure_design_creates_file_when_absent(tmp_path: Path) -> None:
-    out = design.ensure_design("sub01", tmp_path, n_reps=2)
-    assert out == tmp_path / "sub-sub01_design.tsv"
+    target = tmp_path / "sub-sub01_design.tsv"
+    out = design.ensure_design(target, "sub01", n_reps=2)
+    assert out == target
     assert out.exists()
     loaded = pd.read_csv(out, sep="\t")
     pd.testing.assert_frame_equal(loaded, generate_design("sub01", n_reps=2))
 
 
+def test_ensure_design_creates_parent_dir(tmp_path: Path) -> None:
+    target = tmp_path / "nested" / "dir" / "sub-sub01_design.tsv"
+    out = design.ensure_design(target, "sub01", n_reps=2)
+    assert out.is_file()
+
+
 def test_ensure_design_does_not_rewrite_existing_file(tmp_path: Path) -> None:
-    out = design.ensure_design("sub01", tmp_path, n_reps=2)
+    target = tmp_path / "sub-sub01_design.tsv"
+    out = design.ensure_design(target, "sub01", n_reps=2)
     mtime1 = out.stat().st_mtime_ns
-    out2 = design.ensure_design("sub01", tmp_path, n_reps=2)
+    out2 = design.ensure_design(target, "sub01", n_reps=2)
     assert out2 == out
     assert out.stat().st_mtime_ns == mtime1
 
 
 def test_ensure_design_overwrite_flag_replaces_file(tmp_path: Path) -> None:
-    out = design.ensure_design("sub01", tmp_path, n_reps=2)
-    # Overwrite with a different rep count → file content (and length) differs.
-    design.ensure_design("sub01", tmp_path, n_reps=4, overwrite=True)
+    target = tmp_path / "sub-sub01_design.tsv"
+    out = design.ensure_design(target, "sub01", n_reps=2)
+    design.ensure_design(target, "sub01", n_reps=4, overwrite=True)
     loaded = pd.read_csv(out, sep="\t")
     assert len(loaded) == 4 * N_LEVELS_PER_RUN
-
-
-def test_design_path_resolves_relative_to_designs_dir(tmp_path: Path) -> None:
-    p = design.design_path("sub42", tmp_path)
-    assert p.name == "sub-sub42_design.tsv"
-    assert p.parent == tmp_path

@@ -84,8 +84,9 @@ APT_PACKAGES=(
   zlib1g-dev libbz2-dev liblzma-dev
   # X / fonts (psychopy text rendering)
   libxcb-xinerama0 libxrandr-dev libxinerama-dev libfreetype-dev fonts-dejavu-core
-  # ROM data acquisition
-  datalad git-annex
+  # ROM data acquisition. datalad is a Python dep (installed via uv sync below),
+  # but git-annex is a C/Haskell binary that must come from apt.
+  git-annex
 )
 
 apt_install_if_missing() {
@@ -164,45 +165,23 @@ log "Installing mario_task and pinned deps from uv.lock (--extra dev)"
 ( cd "${ROOT_DIR}" && uv sync --extra dev )
 
 # ---------------------------------------------------------------------------
-# 4. wxPython: prefer the extras-index wheel built against this Ubuntu's
-#    system libwx (PyPI 4.2.5 is linked against 3.2.6, but 24.04 ships 3.2.4
-#    so the PyPI wheel fails at psychopy.visual import time).
+# 4. wxPython sanity check.
 # ---------------------------------------------------------------------------
-wx_install_ok() {
-  "${PY}" - <<'PYEOF' 2>/dev/null
+# pyproject.toml's [tool.uv.sources] pins wxPython to the extras-index wheel
+# on Linux + Python 3.10 (4.2.2 built against Ubuntu 24.04's libwx 3.2.4).
+# uv sync above installs it. We just verify here.
+if ! "${PY}" - <<'PYEOF' 2>/dev/null
 import wx  # noqa: F401
 from wx import App  # noqa: F401
 PYEOF
-}
-
-PY_TAG="$("${PY}" -c 'import sys; print(f"cp{sys.version_info.major}{sys.version_info.minor}")')"
-log "Looking up wxPython wheel for ${PY_TAG} at ${WX_FIND_LINKS}"
-WX_PINNED_VERSION="$(curl -fsSL "${WX_FIND_LINKS}" 2>/dev/null \
-  | grep -oE "wxPython-[0-9]+\.[0-9]+\.[0-9]+-${PY_TAG}-${PY_TAG}-linux_x86_64\.whl" \
-  | sed -E "s/^wxPython-([0-9.]+)-.*/\\1/" \
-  | sort -V | tail -1 || true)"
-
-wx_installed_ok=0
-if [[ -n "${WX_PINNED_VERSION}" ]]; then
-  log "Installing wxPython==${WX_PINNED_VERSION} from extras.wxpython.org"
-  if "${PIP_INSTALL[@]}" --force-reinstall --find-links "${WX_FIND_LINKS}" "wxPython==${WX_PINNED_VERSION}" \
-     && wx_install_ok; then
-    wx_installed_ok=1
-    log "wxPython ${WX_PINNED_VERSION} installed and imports cleanly."
-  fi
-else
-  warn "No matching wxPython wheel found at ${WX_FIND_LINKS} for ${PY_TAG}."
+then
+  warn "wxPython fails to import — the extras-index pin in pyproject.toml may be stale."
+  warn "On Ubuntu 24.04 the system libwx is 3.2.4; PyPI wxPython 4.2.5 needs 3.2.6+."
+  warn "Check [tool.uv.sources] in pyproject.toml — the pinned URL must match your"
+  warn "upstream Ubuntu version (${UBUNTU_VERSION}) and Python version."
+  exit 1
 fi
-
-if (( wx_installed_ok == 0 )); then
-  warn "Extras-index install failed; trying PyPI wxPython>=4.2.2 (may fail on Ubuntu 24.04)."
-  "${PIP_INSTALL[@]}" --force-reinstall "wxPython>=4.2.2"
-  if ! wx_install_ok; then
-    warn "wxPython fails to import. System libwxbase/libwxgtk is older than what the PyPI wheel needs."
-    warn "On Ubuntu 24.04 the system libwx is 3.2.4 — the extras index version is the right one."
-    exit 1
-  fi
-fi
+log "wxPython $("${PY}" -c 'import wx; print(wx.version())') imports cleanly."
 
 # ---------------------------------------------------------------------------
 # 5. ROM data via datalad (anonymous HTTPS — no SSH key required)
@@ -211,14 +190,14 @@ MARIO_ROM="${MARIO_STIMULI_DIR}/SuperMarioBros-Nes/rom.nes"
 if [[ ! -e "${MARIO_STIMULI_DIR}/.git" ]]; then
   log "Cloning mario.stimuli via datalad (anonymous HTTPS, no credentials)"
   mkdir -p "$(dirname "${MARIO_STIMULI_DIR}")"
-  "${PY}" -m datalad install -s https://github.com/courtois-neuromod/mario.stimuli "${MARIO_STIMULI_DIR}"
+  "${VENV_DIR}/bin/datalad" install -s https://github.com/courtois-neuromod/mario.stimuli "${MARIO_STIMULI_DIR}"
 else
   log "mario.stimuli already cloned at ${MARIO_STIMULI_DIR}"
 fi
 
 if [[ ! -s "${MARIO_ROM}" ]]; then
   log "Fetching ROM + level save-states via datalad get (public conp-ria-storage-http)"
-  ( cd "${MARIO_STIMULI_DIR}" && "${PY}" -m datalad get . )
+  ( cd "${MARIO_STIMULI_DIR}" && "${VENV_DIR}/bin/datalad" get . )
 fi
 
 if [[ ! -s "${MARIO_ROM}" ]]; then

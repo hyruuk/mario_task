@@ -39,14 +39,15 @@ from typing import Callable, Iterator, Protocol
 import pandas as pd
 
 from mario_task import savestate
-from mario_task.design import ALL_LEVELS, N_LEVELS_PER_RUN
+from mario_task.design import DEFAULT_ENABLED_LEVELS
 from mario_task.paths import BidsPaths
 from mario_task.settings import TaskSettings
 
-# Match design.py: world 9 means "past the last world", i.e. discovery is done.
+# Sentinel used in the discovery savestate when all enabled levels have
+# been cleared. ``world == _DISCOVERY_DONE_WORLD`` means "past the last
+# enabled level" — phases.iter_tasks treats this as the trigger to
+# write the stable savestate and transition into practice.
 _DISCOVERY_DONE_WORLD = 9
-_EXCLUDE: set[tuple[int, int]] = {(2, 2), (7, 2)}
-_MAX_LEVEL_PER_WORLD = 3  # never visits X-4 castle levels
 
 
 # ---------------------------------------------------------------------------
@@ -83,28 +84,35 @@ MakePrompt = Callable[[], HasPressedFlag]
 # ---------------------------------------------------------------------------
 
 
-def advance_discovery_state(state: dict[str, int]) -> dict[str, int]:
+def advance_discovery_state(
+    state: dict[str, int],
+    enabled_levels: tuple[tuple[int, int], ...] = DEFAULT_ENABLED_LEVELS,
+) -> dict[str, int]:
     """Return the next ``{world, level}`` after a successful run.
 
-    Skips ``(2, 2)``, ``(7, 2)``, and all X-4 castle levels. Returns
-    ``{world: 9, level: 1}`` when discovery is complete.
+    Walks through ``enabled_levels`` in the order the operator
+    specified. Returns ``{world: 9, level: 1}`` once the last enabled
+    level has been cleared (the sentinel :func:`discovery_complete`
+    checks for).
 
-    The function is pure — it never reads or writes files. Use it
-    together with :func:`mario_task.savestate.save` to persist progress.
+    Edge cases:
+        * If the current ``(world, level)`` is not in ``enabled_levels``
+          (operator changed the level set mid-progression), the function
+          treats the next state as ``enabled_levels[0]`` so progress
+          resumes from the first enabled level.
+        * The function is pure — it never reads or writes files.
     """
-    world = int(state["world"])
-    level = int(state["level"]) + 1
-    if level > _MAX_LEVEL_PER_WORLD:
-        world += 1
-        level = 1
-    # Hop over excluded pairs. Worst-case we exit the inner loop with
-    # world == _DISCOVERY_DONE_WORLD (no more levels), which signals done.
-    while world < _DISCOVERY_DONE_WORLD and (world, level) in _EXCLUDE:
-        level += 1
-        if level > _MAX_LEVEL_PER_WORLD:
-            world += 1
-            level = 1
-    return {"world": world, "level": level}
+    current = (int(state["world"]), int(state["level"]))
+    try:
+        idx = enabled_levels.index(current)
+    except ValueError:
+        # current level no longer enabled; restart from the first.
+        return {"world": enabled_levels[0][0], "level": enabled_levels[0][1]}
+    next_idx = idx + 1
+    if next_idx >= len(enabled_levels):
+        return {"world": _DISCOVERY_DONE_WORLD, "level": 1}
+    w, l = enabled_levels[next_idx]
+    return {"world": w, "level": l}
 
 
 def discovery_complete(state: dict[str, int]) -> bool:
@@ -124,16 +132,16 @@ def _read_design(design_tsv_path: Path) -> pd.DataFrame:
     return pd.read_csv(design_tsv_path, sep="\t")
 
 
-def practice_levels_at(
-    design: pd.DataFrame, index: int, n: int = N_LEVELS_PER_RUN
-) -> list[str]:
-    """Return ``n`` level names starting at design row ``index``.
+def practice_levels_from(design: pd.DataFrame, index: int) -> list[str]:
+    """Return every remaining level from row ``index`` onward.
 
-    May return fewer than ``n`` entries (or an empty list) if the design
-    TSV is exhausted; phases.py uses that as the "no more practice"
-    signal.
+    Practice runs play through these in order until ``max_duration``
+    expires (the MarioTask checks the time after every attempt); the
+    savestate index advances by the actual number played, not by the
+    list length. Returns an empty list if the design is exhausted —
+    phases.iter_tasks uses that as the "no more practice" signal.
     """
-    slice_ = design.iloc[index : index + n]
+    slice_ = design.iloc[index:]
     return [f"Level{int(row['world'])}-{int(row['level'])}" for _, row in slice_.iterrows()]
 
 
@@ -189,6 +197,11 @@ def iter_tasks(
     run_idx = 0
     design_df: pd.DataFrame | None = None
 
+    enabled_levels = tuple(settings.enabled_levels)
+    initial_discovery_state = {
+        "world": enabled_levels[0][0],
+        "level": enabled_levels[0][1],
+    }
     while True:
         if in_practice:
             if not settings.practice_enabled:
@@ -196,18 +209,21 @@ def iter_tasks(
             if design_df is None:
                 design_df = _read_design(paths.design_tsv)
             state = savestate.load_or_default(stable_savestate_path, {"index": 0})
-            levels = practice_levels_at(design_df, int(state["index"]), settings.n_levels_per_run)
+            levels = practice_levels_from(design_df, int(state["index"]))
             if not levels:
                 return  # design exhausted
             task = make_practice_task(levels, run_idx)
             yield task
-            # Only advance if the run wasn't interrupted (Ctrl+C).
+            # Only advance if the run wasn't interrupted (Ctrl+C). The
+            # index moves by the actual number of levels played
+            # (task._nlevels), not by a fixed slice size — practice runs
+            # are variable-length, capped by max_duration.
             if getattr(task, "_task_completed", False):
                 state = {"index": int(state["index"]) + int(getattr(task, "_nlevels", 0))}
                 savestate.save(stable_savestate_path, state)
         else:
             state = savestate.load_or_default(
-                discovery_savestate_path, {"world": 1, "level": 1}
+                discovery_savestate_path, initial_discovery_state
             )
             if discovery_complete(state):
                 # Shouldn't normally happen (would've been caught at entry)
@@ -220,7 +236,7 @@ def iter_tasks(
             task = make_discovery_task(level_name, run_idx)
             yield task
             if getattr(task, "_completed", False):
-                new_state = advance_discovery_state(state)
+                new_state = advance_discovery_state(state, enabled_levels)
                 savestate.save(discovery_savestate_path, new_state)
                 if discovery_complete(new_state):
                     # Transition into practice from the next run onward.

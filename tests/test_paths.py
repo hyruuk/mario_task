@@ -17,7 +17,7 @@ from mario_task.paths import BidsPaths, check_data_root
 # ---------------------------------------------------------------------------
 
 
-def _make_paths(tmp_path: Path, *, subject: str = "sub01", session: str = "01") -> BidsPaths:
+def _make_paths(tmp_path: Path, *, subject: str = "sub01", session: str = "001") -> BidsPaths:
     return BidsPaths(
         subject=subject,
         session=session,
@@ -29,12 +29,12 @@ def _make_paths(tmp_path: Path, *, subject: str = "sub01", session: str = "01") 
 def test_bids_paths_resolves_session_dir(tmp_path: Path) -> None:
     bp = _make_paths(tmp_path)
     assert bp.sourcedata_subject_dir == tmp_path / "output" / "sourcedata" / "sub-sub01"
-    assert bp.sourcedata_session_dir == bp.sourcedata_subject_dir / "ses-01"
+    assert bp.sourcedata_session_dir == bp.sourcedata_subject_dir / "ses-001"
 
 
 def test_bids_paths_log_path_matches_bids_convention(tmp_path: Path) -> None:
     bp = _make_paths(tmp_path)
-    assert bp.log_path.name == "sub-sub01_ses-01_20260526-153000.log"
+    assert bp.log_path.name == "sub-sub01_ses-001_20260526-153000.log"
     assert bp.log_path.parent == bp.sourcedata_session_dir
 
 
@@ -42,34 +42,32 @@ def test_bids_paths_events_tsv(tmp_path: Path) -> None:
     bp = _make_paths(tmp_path)
     p = bp.events_tsv("task-mario_phase-discovery_run-01")
     assert p.name == (
-        "sub-sub01_ses-01_20260526-153000_task-mario_phase-discovery_run-01_events.tsv"
+        "sub-sub01_ses-001_20260526-153000_task-mario_phase-discovery_run-01_events.tsv"
     )
     assert p.parent == bp.sourcedata_session_dir
 
 
-def test_bids_paths_movie_path_no_counter(tmp_path: Path) -> None:
+def test_bids_paths_movie_path(tmp_path: Path) -> None:
     bp = _make_paths(tmp_path)
     p = bp.movie_path(
-        task_name="task-mario_run-01",
-        game_name="SuperMarioBros-Nes",
+        task_name="task-mario_phase-discovery_run-01",
         state_name="Level1-1",
+        rep_idx=1,
     )
-    assert p.name.endswith(".bk2")
-    assert "SuperMarioBros-Nes" in p.name
-    assert "Level1-1" in p.name
-    # No counter suffix when counter == 0.
-    assert "_000.bk2" not in p.name
+    assert p.name == (
+        "sub-sub01_ses-001_20260526-153000_"
+        "task-mario_phase-discovery_run-01_Level1-1_rep-01.bk2"
+    )
+    # The emulator/game name is intentionally absent.
+    assert "SuperMarioBros-Nes" not in p.name
 
 
-def test_bids_paths_movie_path_with_counter(tmp_path: Path) -> None:
+def test_bids_paths_movie_path_rep_counter(tmp_path: Path) -> None:
     bp = _make_paths(tmp_path)
-    p = bp.movie_path(
-        task_name="task-mario_run-01",
-        game_name="SuperMarioBros-Nes",
-        state_name="Level1-1",
-        counter=3,
-    )
-    assert p.name.endswith("_003.bk2")
+    p1 = bp.movie_path(task_name="task-mario_run-01", state_name="Level1-1", rep_idx=1)
+    p7 = bp.movie_path(task_name="task-mario_run-01", state_name="Level1-1", rep_idx=7)
+    assert p1.name.endswith("_rep-01.bk2")
+    assert p7.name.endswith("_rep-07.bk2")
 
 
 def test_bids_paths_savestate(tmp_path: Path) -> None:
@@ -89,9 +87,16 @@ def test_bids_paths_savestate_rejects_unknown_phase(tmp_path: Path) -> None:
         bp.savestate("warmup")  # type: ignore[arg-type]
 
 
-def test_bids_paths_design_tsv(tmp_path: Path) -> None:
+def test_bids_paths_design_tsv_lives_in_sourcedata(tmp_path: Path) -> None:
     bp = _make_paths(tmp_path)
     assert bp.design_tsv.name == "sub-sub01_design.tsv"
+    assert bp.design_tsv.parent == bp.sourcedata_subject_dir
+
+
+def test_bids_paths_questionnaire_tsv(tmp_path: Path) -> None:
+    bp = _make_paths(tmp_path)
+    assert bp.questionnaire_tsv.name == "sub-sub01_questionnaire.tsv"
+    assert bp.questionnaire_tsv.parent == bp.sourcedata_subject_dir
 
 
 def test_subject_label_validation_rejects_path_separator() -> None:
@@ -182,3 +187,49 @@ def test_check_data_root_complains_when_state_empty(tmp_path: Path) -> None:
     err = check_data_root(smb)
     assert err is not None
     assert "Level1-1.state" in err
+
+
+# ---------------------------------------------------------------------------
+# normalize_subject + infer_next_session
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_subject_strips_bids_prefix() -> None:
+    assert paths.normalize_subject("sub-01") == "01"
+    assert paths.normalize_subject("01") == "01"
+    assert paths.normalize_subject("sub-pilot1") == "pilot1"
+    # Be conservative: only strip an actual leading "sub-".
+    assert paths.normalize_subject("subject-01") == "subject-01"
+
+
+def test_infer_next_session_returns_001_when_subject_dir_absent(tmp_path: Path) -> None:
+    assert paths.infer_next_session(tmp_path / "out", "01") == "001"
+
+
+def test_infer_next_session_returns_001_when_subject_dir_empty(tmp_path: Path) -> None:
+    (tmp_path / "sourcedata" / "sub-01").mkdir(parents=True)
+    assert paths.infer_next_session(tmp_path, "01") == "001"
+
+
+def test_infer_next_session_increments_from_existing_3_digits(tmp_path: Path) -> None:
+    sub = tmp_path / "sourcedata" / "sub-01"
+    (sub / "ses-001").mkdir(parents=True)
+    (sub / "ses-002").mkdir()
+    (sub / "ses-005").mkdir()
+    assert paths.infer_next_session(tmp_path, "01") == "006"
+
+
+def test_infer_next_session_ignores_non_numeric_session_labels(tmp_path: Path) -> None:
+    sub = tmp_path / "sourcedata" / "sub-01"
+    (sub / "ses-001").mkdir(parents=True)
+    (sub / "ses-pilot").mkdir()
+    (sub / "ses-baseline").mkdir()
+    assert paths.infer_next_session(tmp_path, "01") == "002"
+
+
+def test_infer_next_session_accepts_legacy_2_digit_dirs(tmp_path: Path) -> None:
+    """Old subjects with ses-01 / ses-02 still get advanced to ses-003."""
+    sub = tmp_path / "sourcedata" / "sub-01"
+    (sub / "ses-01").mkdir(parents=True)
+    (sub / "ses-02").mkdir()
+    assert paths.infer_next_session(tmp_path, "01") == "003"

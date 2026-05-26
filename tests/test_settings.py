@@ -32,9 +32,111 @@ def test_default_settings_are_sane() -> None:
     assert s.task.max_duration_seconds == 600
     assert s.task.discovery_enabled is True
     assert s.task.practice_enabled is True
-    assert s.task.n_levels_per_run == 22
+    assert len(s.task.enabled_levels) == 22
+    assert s.task.fixation_duration_seconds == 2.0
+    assert s.task.questionnaire_enabled is True
     assert s.display.fullscreen is True
     assert s.paths.output_root == "output"
+
+
+def test_default_trigger_codes() -> None:
+    """Default codes match the documented lifecycle scheme and mod=8."""
+    c = default_settings().triggers.codes
+    assert c.task_start == 0
+    assert c.task_stop == 1
+    assert c.game_reset == 2
+    assert c.non_game_flip == 3
+    assert c.game_frame_base == 16
+    assert c.game_frame_mod == 8
+
+
+def test_custom_trigger_codes_roundtrip_via_config_json(tmp_path) -> None:
+    from mario_task.markers import TriggerCodes
+
+    p = tmp_path / "config.json"
+    s = Settings(
+        triggers=TriggerSettings(
+            codes=TriggerCodes(
+                task_start=100, task_stop=101, game_reset=102, non_game_flip=103,
+                game_frame_base=128, game_frame_mod=32,
+            ),
+        ),
+    )
+    settings.save(p, s)
+    loaded = settings.load_from_file(p)
+    assert loaded.triggers.codes.task_start == 100
+    assert loaded.triggers.codes.game_frame_base == 128
+    assert loaded.triggers.codes.game_frame_mod == 32
+
+
+def test_validate_rejects_lifecycle_code_above_game_frame_base(tmp_path) -> None:
+    from mario_task.markers import TriggerCodes
+
+    bad = Settings(triggers=TriggerSettings(
+        codes=TriggerCodes(task_start=20, game_frame_base=16),
+    ))
+    with pytest.raises(ValueError, match="must be < game_frame_base"):
+        settings.save(tmp_path / "config.json", bad)
+
+
+def test_validate_rejects_duplicate_lifecycle_codes(tmp_path) -> None:
+    from mario_task.markers import TriggerCodes
+
+    bad = Settings(triggers=TriggerSettings(
+        codes=TriggerCodes(task_start=0, task_stop=0),
+    ))
+    with pytest.raises(ValueError, match="distinct"):
+        settings.save(tmp_path / "config.json", bad)
+
+
+def test_validate_rejects_overflowing_game_frame_range(tmp_path) -> None:
+    from mario_task.markers import TriggerCodes
+
+    bad = Settings(triggers=TriggerSettings(
+        codes=TriggerCodes(game_frame_base=200, game_frame_mod=100),
+    ))
+    with pytest.raises(ValueError, match="must be ≤ 256"):
+        settings.save(tmp_path / "config.json", bad)
+
+
+def test_validate_rejects_zero_mod(tmp_path) -> None:
+    from mario_task.markers import TriggerCodes
+
+    bad = Settings(triggers=TriggerSettings(
+        codes=TriggerCodes(game_frame_mod=0),
+    ))
+    with pytest.raises(ValueError, match="must be > 0"):
+        settings.save(tmp_path / "config.json", bad)
+
+
+def test_validate_rejects_game_frame_base_below_4(tmp_path) -> None:
+    """Need ≥ 4 distinct lifecycle codes below base, so base must be ≥ 4."""
+    from mario_task.markers import TriggerCodes
+
+    bad = Settings(triggers=TriggerSettings(
+        codes=TriggerCodes(game_frame_base=3),
+    ))
+    with pytest.raises(ValueError, match="must be ≥ 4"):
+        settings.save(tmp_path / "config.json", bad)
+
+
+def test_validate_accepts_game_frame_base_16_with_mod_16(tmp_path) -> None:
+    """Adjacent ranges are fine: lifecycle 0..3, gameplay 16..31, no overlap."""
+    from mario_task.markers import TriggerCodes
+
+    ok = Settings(triggers=TriggerSettings(
+        codes=TriggerCodes(game_frame_base=16, game_frame_mod=16),
+    ))
+    settings.save(tmp_path / "config.json", ok)  # no exception
+
+
+def test_env_var_disables_questionnaire() -> None:
+    s = load(
+        config_path=None,
+        env={"MARIO_QUESTIONNAIRE_ENABLED": "0"},
+        cli_overrides=None,
+    )
+    assert s.task.questionnaire_enabled is False
 
 
 def test_to_dict_includes_schema_version() -> None:

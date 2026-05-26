@@ -21,7 +21,7 @@ from mario_task.phases import (
     current_level_name,
     discovery_complete,
     iter_tasks,
-    practice_levels_at,
+    practice_levels_from,
 )
 from mario_task.settings import TaskSettings
 
@@ -75,17 +75,24 @@ def test_current_level_name_formats_correctly() -> None:
     assert current_level_name({"world": 8, "level": 3}) == "Level8-3"
 
 
-def test_practice_levels_at_returns_n_levels() -> None:
+def test_practice_levels_from_returns_all_remaining() -> None:
     design = generate_design("sub01", n_reps=3)
-    levels = practice_levels_at(design, 0, n=N_LEVELS_PER_RUN)
-    assert len(levels) == N_LEVELS_PER_RUN
+    levels = practice_levels_from(design, 0)
+    assert len(levels) == 3 * N_LEVELS_PER_RUN
     assert all(name.startswith("Level") for name in levels)
 
 
-def test_practice_levels_at_returns_empty_when_exhausted() -> None:
+def test_practice_levels_from_returns_empty_when_exhausted() -> None:
     design = generate_design("sub01", n_reps=1)
-    levels = practice_levels_at(design, 99999, n=N_LEVELS_PER_RUN)
-    assert levels == []
+    assert practice_levels_from(design, 99999) == []
+
+
+def test_practice_levels_from_starts_at_offset() -> None:
+    design = generate_design("sub01", n_reps=2)
+    levels = practice_levels_from(design, 22)
+    # 2 reps × 22 = 44 rows total; starting at index 22 gives the
+    # 22-entry tail (second shuffle).
+    assert len(levels) == N_LEVELS_PER_RUN
 
 
 # ---------------------------------------------------------------------------
@@ -113,14 +120,12 @@ class StubPrompt:
 def bids_paths(tmp_path: Path) -> BidsPaths:
     bp = BidsPaths(
         subject="sub01",
-        session="01",
+        session="001",
         output_root=tmp_path / "output",
         timestamp="20260526-150000",
-        designs_root=tmp_path / "designs",
     )
     bp.sourcedata_subject_dir.mkdir(parents=True)
     bp.sourcedata_session_dir.mkdir(parents=True)
-    bp.designs_root.mkdir(parents=True)
     # Pre-generate the per-subject design TSV so practice has something to read.
     generate_design("sub01", n_reps=2).to_csv(bp.design_tsv, sep="\t", index=False)
     return bp
@@ -266,10 +271,13 @@ def test_iter_tasks_falls_through_into_practice_when_discovery_completes(
     )
     tasks = [y for y in yielded if isinstance(y, StubTask)]
     assert len(tasks) == 2
-    # Run 1 = discovery (single level), Run 2 = practice (22 levels).
+    # Run 1 = discovery (single level); Run 2 = practice (gets all 44
+    # remaining design entries since fixture has n_reps=2).
     assert len(tasks[0].levels) == 1
-    assert len(tasks[1].levels) == N_LEVELS_PER_RUN
-    # Stable savestate was created during the transition.
+    assert len(tasks[1].levels) == 2 * N_LEVELS_PER_RUN
+    # Stable savestate was created during the transition; index advances
+    # by the actual number of levels played in the practice run
+    # (N_LEVELS_PER_RUN per the stub's _nlevels), not by the slice length.
     assert bids_paths.savestate("stable").exists()
     assert savestate.load(bids_paths.savestate("stable"))["index"] == N_LEVELS_PER_RUN
 
@@ -286,7 +294,8 @@ def test_iter_tasks_skips_discovery_when_stable_savestate_exists(
     )
     tasks = [y for y in yielded if isinstance(y, StubTask)]
     assert len(tasks) == 1
-    assert len(tasks[0].levels) == N_LEVELS_PER_RUN
+    # Practice gets ALL remaining design entries (2 * N = 44 in the fixture).
+    assert len(tasks[0].levels) == 2 * N_LEVELS_PER_RUN
 
 
 # ---------------------------------------------------------------------------
@@ -332,7 +341,8 @@ def test_discovery_disabled_jumps_straight_to_practice(bids_paths: BidsPaths) ->
     )
     tasks = [y for y in yielded if isinstance(y, StubTask)]
     assert len(tasks) == 1
-    assert len(tasks[0].levels) == N_LEVELS_PER_RUN
+    # Practice gets the entire remaining design (2 reps × 22 = 44 levels).
+    assert len(tasks[0].levels) == 2 * N_LEVELS_PER_RUN
     # Stable savestate created on bootstrap.
     assert bids_paths.savestate("stable").exists()
 

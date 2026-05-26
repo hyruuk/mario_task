@@ -18,6 +18,7 @@ from mario_task.markers import (
     TASK_START,
     TASK_STOP,
     _NullBackend,
+    decode_marker,
     encode_frame,
 )
 
@@ -39,23 +40,88 @@ def test_lifecycle_codes_have_expected_values() -> None:
     assert NON_GAME_FLIP == 3
 
 
-def test_encode_frame_wraps_at_240() -> None:
+def test_encode_frame_wraps_with_default_mod_8() -> None:
     assert encode_frame(0) == 16
     assert encode_frame(1) == 17
-    assert encode_frame(239) == 255
-    assert encode_frame(240) == 16  # wraps
-    assert encode_frame(241) == 17
-    assert encode_frame(481) == 17  # wraps twice
+    assert encode_frame(7) == 23
+    assert encode_frame(8) == 16  # wraps
+    assert encode_frame(9) == 17
+    assert encode_frame(17) == 17  # wraps twice
 
 
 def test_lifecycle_and_gameplay_codes_are_disjoint() -> None:
     lifecycle = {TASK_START, TASK_STOP, GAME_RESET, NON_GAME_FLIP}
-    gameplay = {encode_frame(i) for i in range(0, 240)}
+    # Defaults: base=16, mod=8 → gameplay codes 16..23.
+    gameplay = {encode_frame(i) for i in range(0, 100)}
     assert lifecycle & gameplay == set()
-    # Gameplay always fits in a positive byte.
-    assert all(16 <= v <= 255 for v in gameplay)
     # Lifecycle is below the gameplay floor.
     assert all(v < 16 for v in lifecycle)
+    assert all(16 <= v < 24 for v in gameplay)
+
+
+def test_decode_marker_lifecycle_labels() -> None:
+    assert decode_marker(TASK_START) == "TASK_START"
+    assert decode_marker(TASK_STOP) == "TASK_STOP"
+    assert decode_marker(GAME_RESET) == "GAME_RESET"
+    assert decode_marker(NON_GAME_FLIP) == "NON_GAME_FLIP"
+
+
+def test_decode_marker_game_frame_includes_phase() -> None:
+    # Default codes: base=16, mod=8.
+    assert "%8=0" in decode_marker(encode_frame(0))
+    assert "%8=7" in decode_marker(encode_frame(7))
+    # Wrap point.
+    assert "%8=0" in decode_marker(encode_frame(8))
+
+
+def test_decode_marker_unknown_value() -> None:
+    # Values in the reserved 4..15 band are flagged as UNKNOWN (with default codes).
+    assert decode_marker(5).startswith("UNKNOWN")
+    assert decode_marker(15).startswith("UNKNOWN")
+
+
+# ---------------------------------------------------------------------------
+# Configurable trigger codes
+# ---------------------------------------------------------------------------
+
+
+def test_custom_codes_affect_encode_and_decode() -> None:
+    """set_codes overrides the active scheme; encode/decode follow."""
+    custom = markers.TriggerCodes(
+        task_start=10, task_stop=11, game_reset=12, non_game_flip=13,
+        game_frame_base=64, game_frame_mod=16,
+    )
+    markers.set_codes(custom)
+    try:
+        assert markers.TASK_START == 10
+        assert markers.NON_GAME_FLIP == 13
+        assert markers.GAME_FRAME_BASE == 64
+        assert markers.GAME_FRAME_MOD == 16
+        assert encode_frame(0) == 64
+        assert encode_frame(15) == 79
+        assert encode_frame(16) == 64  # wraps at the new mod
+        assert decode_marker(10) == "TASK_START"
+        assert "%16=3" in decode_marker(encode_frame(3))
+    finally:
+        # Reset for other tests.
+        markers._reset_for_tests()
+
+
+def test_configure_with_codes_applies_them() -> None:
+    custom = markers.TriggerCodes(game_frame_mod=4)
+    markers.configure("null", codes=custom)
+    try:
+        # mod=4 → codes cycle 16..19.
+        assert encode_frame(0) == 16
+        assert encode_frame(4) == 16
+        assert markers.GAME_FRAME_MOD == 4
+    finally:
+        markers._reset_for_tests()
+
+
+def test_module_getattr_raises_for_unknown_name() -> None:
+    with pytest.raises(AttributeError):
+        markers.NOT_A_REAL_CONSTANT  # type: ignore[attr-defined]
 
 
 def test_encode_frame_accepts_numpy_like_ints() -> None:

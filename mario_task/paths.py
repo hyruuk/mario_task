@@ -22,11 +22,13 @@ The layout (matches the upstream `task_stimuli` BIDS structure):
                 ├── sub-<subject>_ses-<session>_<timestamp>_<taskname>_events.tsv
                 └── sub-<subject>_ses-<session>_<timestamp>_<taskname>_<game>_<state>.bk2
 
-Plus, outside the BIDS tree, the per-subject design TSV lives at::
+The per-subject practice design TSV lives at the subject level too::
 
-    designs_root/sub-<subject>_design.tsv
+    output_root/sourcedata/sub-<subject>/sub-<subject>_design.tsv
 
-where ``designs_root`` defaults to ``data/videogames/mario/designs/``.
+so deleting the subject directory wipes every trace of that subject —
+savestates, design, session outputs, and cumulative questionnaire
+answers. No scattered state under ``data/``.
 
 Pure stdlib; no psychopy / retro imports. Safe to use from tests.
 """
@@ -59,6 +61,46 @@ def make_timestamp() -> str:
     return time.strftime("%Y%m%d-%H%M%S", time.localtime())
 
 
+def normalize_subject(raw: str) -> str:
+    """Strip BIDS ``sub-`` prefix if the user typed one.
+
+    >>> normalize_subject("sub-01")
+    '01'
+    >>> normalize_subject("01")
+    '01'
+    >>> normalize_subject("sub-pilot1")
+    'pilot1'
+    """
+    return raw[4:] if raw.startswith("sub-") else raw
+
+
+def infer_next_session(output_root: str | Path, subject: str) -> str:
+    """Return the next zero-padded session number for ``subject``.
+
+    Scans ``output_root/sourcedata/sub-<subject>/ses-*/`` for numeric
+    session labels; returns ``max(existing) + 1`` formatted as a
+    **3-digit** string (``"001"``, ``"002"``, ...). Returns ``"001"``
+    if no sessions exist yet.
+
+    Non-numeric session labels (e.g. ``ses-pilot``) are ignored when
+    picking the next number.
+    """
+    import re
+
+    subj_dir = Path(output_root) / "sourcedata" / f"sub-{subject}"
+    if not subj_dir.is_dir():
+        return "001"
+    pat = re.compile(r"^ses-(\d+)$")
+    nums: list[int] = []
+    for child in subj_dir.iterdir():
+        if not child.is_dir():
+            continue
+        m = pat.match(child.name)
+        if m:
+            nums.append(int(m.group(1)))
+    return f"{(max(nums) + 1) if nums else 1:03d}"
+
+
 @dataclass(frozen=True)
 class BidsPaths:
     """Resolved file-system paths for a single subject / session / run.
@@ -69,31 +111,25 @@ class BidsPaths:
     a tmp dir without side-effects).
 
     Attributes:
-        subject:     Subject label, e.g. ``"sub01"``. No ``sub-`` prefix.
-        session:     Session label, e.g. ``"01"``. No ``ses-`` prefix.
+        subject:     Subject label, e.g. ``"01"``. No ``sub-`` prefix.
+        session:     Session label, e.g. ``"001"`` (3-digit by convention).
+                     No ``ses-`` prefix.
         output_root: Root directory for the BIDS tree (typically ``./output``).
         timestamp:   Run timestamp, ``YYYYMMDD-HHMMSS``. Defaults to ``make_timestamp()``.
-        designs_root: Where to write per-subject design TSVs. Defaults to
-                      ``data/videogames/mario/designs/`` relative to cwd.
     """
 
     subject: str
     session: str
     output_root: Path
     timestamp: str = field(default_factory=make_timestamp)
-    designs_root: Path = field(
-        default_factory=lambda: Path("data/videogames/mario/designs")
-    )
 
     def __post_init__(self) -> None:
         _validate_label("subject", self.subject)
         _validate_label("session", self.session)
-        # Normalize paths to Path instances — dataclass-frozen + object.__setattr__
-        # lets us coerce without breaking immutability semantics.
+        # Normalize the output root to a Path. Dataclass(frozen=True) +
+        # object.__setattr__ lets us coerce without breaking immutability.
         if not isinstance(self.output_root, Path):
             object.__setattr__(self, "output_root", Path(self.output_root))
-        if not isinstance(self.designs_root, Path):
-            object.__setattr__(self, "designs_root", Path(self.designs_root))
 
     # ----- directories -----
 
@@ -126,20 +162,24 @@ class BidsPaths:
         _validate_task_name(task_name)
         return self.sourcedata_session_dir / f"{self.session_prefix}_{task_name}_events.tsv"
 
-    def movie_path(
-        self, task_name: str, game_name: str, state_name: str, counter: int = 0
-    ) -> Path:
-        """Path for a single BK2 emulator recording.
+    def movie_path(self, task_name: str, state_name: str, rep_idx: int) -> Path:
+        """Path for a single bk2 emulator recording.
 
-        ``counter`` is appended only when ``>0`` so the most common case
-        (one bk2 per (task, game, state)) gets clean filenames; collisions
-        get suffixed ``_001``, ``_002``, etc. by the engine.
+        Naming: ``<prefix>_<task_name>_<state_name>_rep-<NN>.bk2`` where
+        ``rep_idx`` is the *within-run* attempt counter (1-indexed). The
+        emulator game name is intentionally NOT in the filename — the
+        repo only handles SuperMarioBros-Nes, so it would be redundant
+        noise.
+
+        Args:
+            task_name:  BIDS task name, e.g. ``"task-mario_phase-discovery_run-01"``.
+            state_name: Level name as exposed by stable-retro, e.g. ``"Level1-1"``.
+            rep_idx:    1-indexed attempt counter, scoped to the run.
         """
         _validate_task_name(task_name)
-        suffix = f"_{counter:03d}" if counter > 0 else ""
         return (
             self.sourcedata_session_dir
-            / f"{self.session_prefix}_{task_name}_{game_name}_{state_name}{suffix}.bk2"
+            / f"{self.session_prefix}_{task_name}_{state_name}_rep-{rep_idx:02d}.bk2"
         )
 
     def savestate(self, phase: Literal["discovery", "stable"]) -> Path:
@@ -153,8 +193,23 @@ class BidsPaths:
 
     @property
     def design_tsv(self) -> Path:
-        """Path to this subject's design TSV (outside the BIDS tree)."""
-        return self.designs_root / f"sub-{self.subject}_design.tsv"
+        """Path to this subject's practice-phase design TSV.
+
+        Lives under the per-subject sourcedata directory so deleting the
+        subject dir wipes every trace of the subject (savestates, design,
+        cumulative questionnaire, session outputs).
+        """
+        return self.sourcedata_subject_dir / f"sub-{self.subject}_design.tsv"
+
+    @property
+    def questionnaire_tsv(self) -> Path:
+        """Path to this subject's cumulative questionnaire answers TSV.
+
+        One row per question per submission, accumulated across every run
+        and session for this subject. Convenient for downstream analysis
+        without having to walk every per-task events.tsv.
+        """
+        return self.sourcedata_subject_dir / f"sub-{self.subject}_questionnaire.tsv"
 
 
 def _validate_task_name(name: str) -> None:

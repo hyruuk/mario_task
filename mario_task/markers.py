@@ -7,61 +7,153 @@ Three transports, selected at runtime via :func:`configure`:
 * ``"parallel"`` — pyparallel write to ``/dev/parport1``. Linux only.
 * ``"null"`` — drop all markers (dev / offline). Never raises.
 
-Marker codes (single positive byte; same value on every transport):
+Marker code scheme (single positive byte; same value on every transport):
 
-==========  ==========================================================
-  0         TASK_START — once when ``task.run()`` enters its loop
-  1         TASK_STOP  — once when ``task.run()`` exits
-  2         GAME_RESET — once per ``emulator.reset()``
-  3         NON_GAME_FLIP — heartbeat on every non-gameplay PsychoPy flip
-  4..15     reserved
- 16..255    GAME_FRAME — gameplay heartbeat, ``16 + (level_step % 240)``,
-              pushed once per ``emulator.step()`` so marker count exactly
-              matches BK2 frame count even when render frames are dropped.
-              The byte wraps every 240 frames (~4 s @ 60 Hz NES); the
-              bk2 disambiguates the absolute frame index.
-==========  ==========================================================
+* Lifecycle codes (default 0–3): ``task_start``, ``task_stop``, ``game_reset``,
+  ``non_game_flip``.
+* Gameplay codes (default 16 + (level_step % 8)): pushed once per
+  ``emulator.step()`` so marker count exactly matches BK2 frame count
+  even when render frames are dropped. The byte wraps every
+  ``game_frame_mod`` frames; the bk2 disambiguates the absolute index.
+* Lifecycle and gameplay codes are disjoint by construction (lifecycle
+  values < ``game_frame_base``, gameplay values ≥ ``game_frame_base``).
 
-Lifecycle codes (0–3) and gameplay codes (16–255) are disjoint by design
-so analysts can split the stream without ambiguity.
+All six numeric codes plus the modulo are user-editable via the
+:class:`TriggerCodes` dataclass — populated from ``config.json`` and
+passed to :func:`configure`. Module-level constants like
+``markers.TASK_START`` resolve dynamically via :func:`__getattr__`, so
+code reading ``markers.TASK_START`` always sees the *currently
+configured* value. Avoid ``from mario_task.markers import TASK_START``
+imports — those capture the value at import time and won't update if
+:func:`configure` is called later.
 
 If a backend fails to initialize (LSL daemon unreachable, serial port
 missing, etc.), :func:`configure` automatically substitutes
 :class:`_NullBackend`, logs a warning, and execution continues. This
 prevents an in-progress session from crashing because a marker stream
 went away; the operator sees the warning at the start of the session.
-
-The module is pure-Python and has at most ``pylsl`` / ``pyserial`` /
-``pyparallel`` as optional runtime deps. Test code can pre-set
-``_backend`` directly to inject a stub.
 """
 
 from __future__ import annotations
 
 import logging
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Marker codes
+# Trigger code scheme (configurable via config.json -> Settings.triggers.codes)
 # ---------------------------------------------------------------------------
 
-TASK_START = 0
-TASK_STOP = 1
-GAME_RESET = 2
-NON_GAME_FLIP = 3
 
-_GAME_FRAME_BASE = 16
-_GAME_FRAME_MOD = 240  # 256 - _GAME_FRAME_BASE
+@dataclass(frozen=True)
+class TriggerCodes:
+    """Single-byte marker code scheme.
+
+    Constraints (enforced by validation in :mod:`mario_task.settings`):
+        * Every code must fit in ``[0, 255]``.
+        * Lifecycle codes (``task_start``, ``task_stop``, ``game_reset``,
+          ``non_game_flip``) must all be strictly below ``game_frame_base``
+          so gameplay markers can never collide with lifecycle markers.
+        * ``game_frame_base + game_frame_mod`` must fit in ``[0, 256]``
+          (i.e. gameplay codes stay within a single byte).
+        * Lifecycle codes must be distinct.
+
+    The ``game_frame_mod`` default of 8 produces 8 distinct rapidly-cycling
+    gameplay codes (16..23 by default), wrapping every ~133 ms at 60 Hz.
+    The wrap is harmless because the bk2 stores absolute frame indices;
+    the marker stream just lets analysts find frame boundaries cheaply.
+    """
+
+    task_start: int = 0
+    task_stop: int = 1
+    game_reset: int = 2
+    non_game_flip: int = 3
+    game_frame_base: int = 16
+    game_frame_mod: int = 8
+
+
+# Active code scheme. Mutated by :func:`configure` (with the codes loaded
+# from config.json). The module's __getattr__ exposes the individual codes
+# under the canonical UPPERCASE names so legacy ``markers.TASK_START``
+# accesses keep working.
+_codes: TriggerCodes = TriggerCodes()
+
+
+def set_codes(codes: TriggerCodes) -> None:
+    """Override the active trigger code scheme.
+
+    Normally :func:`configure` handles this; :func:`set_codes` is exposed
+    for tests and for callers (e.g. monitor) that need to read different
+    codes than the experiment is publishing.
+    """
+    global _codes
+    _codes = codes
+
+
+def get_codes() -> TriggerCodes:
+    """Return the currently active :class:`TriggerCodes`."""
+    return _codes
+
+
+def __getattr__(name: str) -> Any:
+    """Expose the trigger codes as module-level constants.
+
+    Lets call sites use ``markers.TASK_START`` (preferred) instead of
+    ``markers.get_codes().task_start``. Module-level ``__getattr__``
+    re-resolves on every access, so the values reflect the most recent
+    :func:`configure` / :func:`set_codes` call.
+    """
+    if name == "TASK_START":
+        return _codes.task_start
+    if name == "TASK_STOP":
+        return _codes.task_stop
+    if name == "GAME_RESET":
+        return _codes.game_reset
+    if name == "NON_GAME_FLIP":
+        return _codes.non_game_flip
+    if name == "GAME_FRAME_BASE":
+        return _codes.game_frame_base
+    if name == "GAME_FRAME_MOD":
+        return _codes.game_frame_mod
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def encode_frame(level_step: int) -> int:
-    """Encode a gameplay frame index as a single positive byte in [16, 255]."""
-    return _GAME_FRAME_BASE + (int(level_step) % _GAME_FRAME_MOD)
+    """Encode a gameplay frame index as a single positive byte.
+
+    Returns ``codes.game_frame_base + (level_step % codes.game_frame_mod)``,
+    using the currently active :class:`TriggerCodes`.
+    """
+    return _codes.game_frame_base + (int(level_step) % _codes.game_frame_mod)
+
+
+def decode_marker(value: int) -> str:
+    """Return a human-readable label for a marker byte.
+
+    Used by :mod:`mario_task.monitor` to print readable output, and by
+    anyone post-processing a LabRecorder XDF file who wants a string
+    column alongside the integer.
+
+    Uses the currently active :class:`TriggerCodes`. If you're decoding
+    a recording made with a different code scheme, call :func:`set_codes`
+    with the matching scheme first.
+    """
+    if value == _codes.task_start:
+        return "TASK_START"
+    if value == _codes.task_stop:
+        return "TASK_STOP"
+    if value == _codes.game_reset:
+        return "GAME_RESET"
+    if value == _codes.non_game_flip:
+        return "NON_GAME_FLIP"
+    gf_end = _codes.game_frame_base + _codes.game_frame_mod
+    if _codes.game_frame_base <= value < gf_end:
+        return f"GAME_FRAME[%{_codes.game_frame_mod}={value - _codes.game_frame_base}]"
+    return f"UNKNOWN({value})"
 
 
 EEG_MARKERS_ON_FLIP = True
@@ -190,6 +282,7 @@ def configure(
     backend: str = "lsl",
     port: str | None = None,
     stream: StreamConfig | None = None,
+    codes: TriggerCodes | None = None,
 ) -> _Backend:
     """Pick the active marker transport. Returns the resolved backend.
 
@@ -197,6 +290,12 @@ def configure(
         backend: ``"lsl"``, ``"serial"``, ``"parallel"``, or ``"null"``.
         port:    Device path. Required for serial / parallel.
         stream:  LSL stream identity. Optional; defaults to ``StreamConfig()``.
+        codes:   :class:`TriggerCodes` defining the marker code scheme.
+                 When set, the new codes apply globally to subsequent
+                 :func:`send_signal`, :func:`encode_frame`, and
+                 :func:`decode_marker` calls. ``None`` leaves the active
+                 codes unchanged (defaults to :class:`TriggerCodes()` at
+                 module import time).
 
     On init failure (LSL daemon unreachable, serial port missing,
     pyparallel not installed on Windows, etc.) the function falls back to
@@ -204,6 +303,8 @@ def configure(
     keep running.
     """
     global _backend
+    if codes is not None:
+        set_codes(codes)
     backend = backend.lower()
     try:
         if backend == "lsl":
@@ -267,6 +368,7 @@ def now() -> float:
 
 
 def _reset_for_tests() -> None:
-    """Drop the active backend. Used by tests; not part of the public API."""
-    global _backend
+    """Drop the active backend AND reset codes to defaults. Used by tests."""
+    global _backend, _codes
     _backend = None
+    _codes = TriggerCodes()

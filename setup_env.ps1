@@ -107,7 +107,7 @@ if (-not (Test-Path $VenvPython)) {
 if (-not (Test-Path "$MarioStimuliDir\.git")) {
     Log "Cloning mario.stimuli via datalad (anonymous HTTPS, no credentials)"
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $MarioStimuliDir) | Out-Null
-    & $VenvPython -m datalad install -s https://github.com/courtois-neuromod/mario.stimuli $MarioStimuliDir
+    & (Join-Path $VenvDir "Scripts\datalad.exe") install -s https://github.com/courtois-neuromod/mario.stimuli $MarioStimuliDir
 } else {
     Log "mario.stimuli already cloned at $MarioStimuliDir"
 }
@@ -116,7 +116,7 @@ if (-not (Test-Path $MarioRom) -or ((Get-Item $MarioRom).Length -eq 0)) {
     Log "Fetching ROM + level save-states via datalad get (public conp-ria-storage-http)"
     Push-Location $MarioStimuliDir
     try {
-        & $VenvPython -m datalad get .
+        & (Join-Path $VenvDir "Scripts\datalad.exe") get .
     } finally {
         Pop-Location
     }
@@ -127,7 +127,7 @@ if (-not (Test-Path $MarioRom) -or ((Get-Item $MarioRom).Length -eq 0)) {
 rom.nes is still empty after datalad get — the remote mirror may be down.
 Try manually:
     cd $MarioStimuliDir
-    & $VenvPython -m datalad get .
+    & (Join-Path $VenvDir "Scripts\datalad.exe") get .
 "@
 }
 Log ("ROM is real: " + (Get-Item $MarioRom).Length + " bytes")

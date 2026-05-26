@@ -10,6 +10,8 @@ dependencies = [
     # Stimulus engine
     "psychopy",
     "stable-retro",
+    # wxPython MUST be pinned via tool.uv.sources below — see comment.
+    "wxPython",
     # Numerical / data
     "numpy<2",
     "pandas>=1.5",
@@ -27,6 +29,19 @@ dependencies = [
     "tqdm",
     # ROM data acquisition (used by setup_env, but kept in venv so `uv run` works)
     "datalad",
+]
+
+# wxPython gotcha: PyPI's 4.2.5 is built against wxWidgets 3.2.6, but
+# Ubuntu 24.04 ships wxWidgets 3.2.4 — so loading psychopy.visual at
+# runtime dies with "libwx_baseu-3.2.so.0: version `WXU_3.2.6' not found".
+# The wxpython.org extras index hosts wheels built against each Ubuntu
+# release's system libwx. We pin to the exact extras-index wheel for
+# Ubuntu 24.04 + Python 3.10 on Linux, and let Windows resolve PyPI's
+# 4.2.5 (which works fine because Windows wheels bundle their own libwx).
+# If you upgrade the target Ubuntu or Python version, swap the URL here.
+[tool.uv.sources]
+wxpython = [
+    { url = "https://extras.wxpython.org/wxPython4/extras/linux/gtk3/ubuntu-24.04/wxPython-4.2.2-cp310-cp310-linux_x86_64.whl", marker = "sys_platform == 'linux' and python_version == '3.10'" },
 ]
 
 [project.optional-dependencies]

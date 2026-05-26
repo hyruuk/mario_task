@@ -25,11 +25,16 @@ from __future__ import annotations
 import json
 import os
 import sys
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any, Literal, Mapping
 
 from mario_task import savestate
+from mario_task.design import (
+    ALL_POSSIBLE_LEVELS,
+    DEFAULT_ENABLED_LEVELS,
+)
+from mario_task.markers import TriggerCodes
 
 # Bumping this should force a migration path. Keep it boring.
 SCHEMA_VERSION = 1
@@ -50,6 +55,7 @@ class TriggerSettings:
     lsl_stream_name: str = "mario_task"
     lsl_stream_type: str = "Markers"
     lsl_stream_source_id: str = "mario_task_markers"
+    codes: TriggerCodes = field(default_factory=TriggerCodes)
 
 
 @dataclass(frozen=True)
@@ -57,7 +63,22 @@ class TaskSettings:
     max_duration_seconds: int = 600
     discovery_enabled: bool = True
     practice_enabled: bool = True
-    n_levels_per_run: int = 22
+    # Levels enabled for discovery (visited in this order) and practice
+    # (shuffled per epoch). Each entry is a ``(world, level)`` pair.
+    # Default is the canonical 22-level set; you can override in
+    # config.json to enable any subset of mario_task.design.ALL_POSSIBLE_LEVELS
+    # (including the 8 castle X-4 levels and (2,2)/(7,2)). Practice runs
+    # play levels sequentially from the design TSV; one "epoch" in the TSV
+    # is one shuffle of enabled_levels, so the pool of unplayed levels is
+    # depleted before any level can repeat.
+    enabled_levels: tuple[tuple[int, int], ...] = field(
+        default_factory=lambda: tuple(DEFAULT_ENABLED_LEVELS)
+    )
+    fixation_duration_seconds: float = 2.0
+    # If True, append a Likert flow-ratings questionnaire at the end of every
+    # run. Set False for dev / smoke-test runs where the experimenter just
+    # wants to verify gameplay without filling in 12 questions.
+    questionnaire_enabled: bool = True
 
 
 @dataclass(frozen=True)
@@ -72,7 +93,6 @@ class PathSettings:
     rom_file: str = "data/mario.stimuli/SuperMarioBros-Nes/rom.nes"
     data_root: str = "data/mario.stimuli/SuperMarioBros-Nes"
     output_root: str = "output"
-    designs_root: str = "data/videogames/mario/designs"
 
 
 @dataclass(frozen=True)
@@ -93,6 +113,10 @@ class Settings:
         # Tuples → lists for JSON compatibility.
         if d["display"]["window_size"] is not None:
             d["display"]["window_size"] = list(d["display"]["window_size"])
+        # enabled_levels: tuple[tuple[int, int], ...] → list of [w, l] pairs.
+        d["task"]["enabled_levels"] = [
+            [int(w), int(l)] for w, l in self.task.enabled_levels
+        ]
         return d
 
 
@@ -106,6 +130,70 @@ def default_settings() -> Settings:
 # ---------------------------------------------------------------------------
 
 
+def _validate_codes(c: TriggerCodes) -> None:
+    """Enforce the constraints documented on :class:`TriggerCodes`.
+
+    Constraints (all enforced here):
+        1. Every code value must fit in a single byte: ``[0, 255]``.
+        2. Lifecycle codes must be strictly below ``game_frame_base`` so
+           gameplay frame markers (``[base, base+mod)``) can never
+           collide with lifecycle markers.
+        3. Lifecycle codes must be distinct (otherwise analysts can't
+           tell ``TASK_START`` apart from ``GAME_RESET``).
+        4. ``game_frame_base`` must be ≥ 4 so all 4 lifecycle codes can
+           fit below it.
+        5. ``game_frame_mod`` must be > 0 (or ``encode_frame`` would
+           divide-by-zero).
+        6. ``game_frame_base + game_frame_mod`` must be ≤ 256 so the
+           gameplay code range stays inside a byte.
+    """
+    lifecycle = {
+        "task_start": c.task_start,
+        "task_stop": c.task_stop,
+        "game_reset": c.game_reset,
+        "non_game_flip": c.non_game_flip,
+    }
+    for name, val in lifecycle.items():
+        if not (0 <= val <= 255):
+            raise ValueError(f"triggers.codes.{name}={val} must be in [0, 255]")
+    # Distinctness first — gives a clearer message than "must be < base"
+    # when someone accidentally sets two lifecycle codes equal.
+    if len(set(lifecycle.values())) != len(lifecycle):
+        raise ValueError(
+            f"triggers.codes lifecycle values must be distinct, got {lifecycle}."
+        )
+    if c.game_frame_base < 4:
+        raise ValueError(
+            f"triggers.codes.game_frame_base={c.game_frame_base} must be ≥ 4 so "
+            f"all 4 lifecycle codes (task_start, task_stop, game_reset, "
+            f"non_game_flip) can fit below it without collisions."
+        )
+    if c.game_frame_base > 255:
+        raise ValueError(
+            f"triggers.codes.game_frame_base={c.game_frame_base} must be in [4, 255]"
+        )
+    for name, val in lifecycle.items():
+        if val >= c.game_frame_base:
+            raise ValueError(
+                f"triggers.codes.{name}={val} must be < game_frame_base "
+                f"({c.game_frame_base}); otherwise gameplay markers (which "
+                f"occupy [{c.game_frame_base}, {c.game_frame_base + c.game_frame_mod})) "
+                f"would collide with this lifecycle marker."
+            )
+    if c.game_frame_mod <= 0:
+        raise ValueError(
+            f"triggers.codes.game_frame_mod={c.game_frame_mod} must be > 0 "
+            f"(it's the period of the rolling gameplay-frame counter)."
+        )
+    if c.game_frame_base + c.game_frame_mod > 256:
+        raise ValueError(
+            f"game_frame_base ({c.game_frame_base}) + game_frame_mod "
+            f"({c.game_frame_mod}) = {c.game_frame_base + c.game_frame_mod} "
+            f"must be ≤ 256 so gameplay markers stay within a single byte. "
+            f"Either lower game_frame_base or game_frame_mod."
+        )
+
+
 def _validate(s: Settings) -> None:
     if s.triggers.backend not in _VALID_BACKENDS:
         raise ValueError(
@@ -116,13 +204,24 @@ def _validate(s: Settings) -> None:
             f"triggers.port must be set when backend={s.triggers.backend!r} "
             f"(e.g. '/dev/ttyACM0', 'COM3', '/dev/parport1')."
         )
+    _validate_codes(s.triggers.codes)
     if s.task.max_duration_seconds <= 0:
         raise ValueError(
             f"task.max_duration_seconds must be > 0, got {s.task.max_duration_seconds}"
         )
-    if s.task.n_levels_per_run <= 0:
+    if not s.task.enabled_levels:
+        raise ValueError("task.enabled_levels must be non-empty.")
+    if len(set(s.task.enabled_levels)) != len(s.task.enabled_levels):
         raise ValueError(
-            f"task.n_levels_per_run must be > 0, got {s.task.n_levels_per_run}"
+            f"task.enabled_levels must not contain duplicates, "
+            f"got {s.task.enabled_levels}."
+        )
+    invalid = [lvl for lvl in s.task.enabled_levels if lvl not in ALL_POSSIBLE_LEVELS]
+    if invalid:
+        raise ValueError(
+            f"task.enabled_levels contains levels that don't exist in NES SMB: "
+            f"{invalid}. Valid choices are mario_task.design.ALL_POSSIBLE_LEVELS "
+            f"({len(ALL_POSSIBLE_LEVELS)} entries: 8 worlds × 4 levels)."
         )
     if not s.task.discovery_enabled and not s.task.practice_enabled:
         raise ValueError(
@@ -151,6 +250,31 @@ def _validate(s: Settings) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _filter_known(d: Mapping[str, Any], cls: type) -> dict[str, Any]:
+    """Drop keys not declared on the dataclass ``cls``.
+
+    Lets ``config.json`` files written by older versions still load
+    after a field is removed (e.g. the old ``n_levels_per_run``). We
+    log a warning the first time so the operator notices.
+    """
+    known = {f.name for f in fields(cls)}
+    out: dict[str, Any] = {}
+    dropped: list[str] = []
+    for k, v in d.items():
+        if k in known:
+            out[k] = v
+        else:
+            dropped.append(k)
+    if dropped:
+        import logging as _stdlib_logging
+        _stdlib_logging.getLogger(__name__).info(
+            "Ignoring unknown config keys for %s: %s "
+            "(maybe a field was renamed/removed; safe to delete from config.json).",
+            cls.__name__, dropped,
+        )
+    return out
+
+
 def _from_dict(data: Mapping[str, Any]) -> Settings:
     """Build a Settings from a (possibly partial) dict; missing fields → defaults.
 
@@ -163,8 +287,25 @@ def _from_dict(data: Mapping[str, Any]) -> Settings:
             f"(expected {SCHEMA_VERSION}). Delete config.json and re-run the wizard."
         )
 
-    triggers = TriggerSettings(**{**asdict(TriggerSettings()), **data.get("triggers", {})})
-    task = TaskSettings(**{**asdict(TaskSettings()), **data.get("task", {})})
+    triggers_in = dict(data.get("triggers", {}))
+    codes_in = triggers_in.pop("codes", None)
+    triggers_in = _filter_known(triggers_in, TriggerSettings)
+    if codes_in is not None:
+        codes = TriggerCodes(**_filter_known(codes_in, TriggerCodes))
+    else:
+        codes = TriggerCodes()
+    triggers_defaults = {f.name: getattr(TriggerSettings(), f.name) for f in fields(TriggerSettings)}
+    triggers = TriggerSettings(**{**triggers_defaults, **triggers_in, "codes": codes})
+
+    task_in = _filter_known(dict(data.get("task", {})), TaskSettings)
+    # enabled_levels comes in as a list of [w, l] pairs in JSON; coerce
+    # to the tuple-of-tuples our dataclass expects.
+    if "enabled_levels" in task_in:
+        task_in["enabled_levels"] = tuple(
+            tuple(pair) for pair in task_in["enabled_levels"]
+        )
+    task_defaults = {f.name: getattr(TaskSettings(), f.name) for f in fields(TaskSettings)}
+    task = TaskSettings(**{**task_defaults, **task_in})
 
     display_in = data.get("display", {})
     ws = display_in.get("window_size")
@@ -215,6 +356,8 @@ _ENV_KEYS = {
     "MARIO_MAX_DURATION": ("task", "max_duration_seconds", int),
     "MARIO_DISCOVERY_ENABLED": ("task", "discovery_enabled", "bool"),
     "MARIO_PRACTICE_ENABLED": ("task", "practice_enabled", "bool"),
+    "MARIO_QUESTIONNAIRE_ENABLED": ("task", "questionnaire_enabled", "bool"),
+    "MARIO_FIXATION_DURATION": ("task", "fixation_duration_seconds", int),
     # display
     "EXP_WIN_FULLSCR": ("display", "fullscreen", "bool"),
     "EXP_WIN_SCREEN": ("display", "screen_index", int),
