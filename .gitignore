@@ -1,0 +1,32 @@
+# Build / packaging
+build/
+dist/
+*.egg-info/
+*.pyc
+__pycache__/
+
+# Virtual environment + cached lockfiles
+.venv/
+.uv-cache/
+
+# Generated at install or runtime
+.local-libs/
+data/mario.stimuli/
+output/
+config.json
+.env
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Test / coverage artifacts
+.coverage
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+
+# Emulator recordings (large, regenerable)
+*.bk2

@@ -1,0 +1,61 @@
+[project]
+name = "mario_task"
+version = "0.1.0"
+description = "NES Super Mario Bros experiment runner with EEG/iEEG markers and BIDS output."
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+license = { text = "MIT" }
+authors = [{ name = "Yann Harel", email = "yharel109@gmail.com" }]
+dependencies = [
+    # Stimulus engine
+    "psychopy",
+    "stable-retro",
+    # Numerical / data
+    "numpy<2",
+    "pandas>=1.5",
+    # Audio / image (pulled in by psychopy too, pinned here for clarity)
+    "sounddevice",
+    "soundfile",
+    "Pillow",
+    # I/O for EEG markers
+    "pylsl",
+    "pyserial",
+    # Linux-only parallel-port marker support; Windows uses LSL or serial
+    'pyparallel; sys_platform == "linux"',
+    # Misc
+    "python-dotenv",
+    "tqdm",
+    # ROM data acquisition (used by setup_env, but kept in venv so `uv run` works)
+    "datalad",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+    "pytest-cov",
+    "ruff",
+]
+
+[project.scripts]
+mario-task = "mario_task.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["mario_task"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+extend-select = ["I"]  # import sorting
+ignore = ["E501"]      # let line-length handle long lines
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: tests requiring a display + psychopy + retro (skipped in CI)",
+]
