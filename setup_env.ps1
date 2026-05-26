@@ -24,6 +24,30 @@ function Log($msg)  { Write-Host "==> $msg" -ForegroundColor Cyan }
 function Warn($msg) { Write-Host "[!] $msg" -ForegroundColor Yellow }
 function Die($msg)  { Write-Host "[x] $msg" -ForegroundColor Red; exit 1 }
 
+# After a winget install the new binary lives at a location not in this
+# session's PATH; refresh from the system/user registry so the rest of
+# the script can find it.
+function Refresh-Path {
+    $machine = [Environment]::GetEnvironmentVariable("Path", "Machine")
+    $user    = [Environment]::GetEnvironmentVariable("Path", "User")
+    $env:Path = "$machine;$user"
+}
+
+# ---------------------------------------------------------------------------
+# 0. winget availability gate
+# ---------------------------------------------------------------------------
+# We rely on winget for git-annex; surface a clean error early rather
+# than failing deep inside an install step.
+if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+    Die @"
+winget (Windows Package Manager) is not available on this machine.
+  - On Windows 11: it should be built-in. Try restarting and re-running.
+  - On Windows 10: open the Microsoft Store, search for "App Installer",
+    install it (free), then re-run this script.
+Direct link: https://www.microsoft.com/store/productId/9NBLGGH4NNS1
+"@
+}
+
 # ---------------------------------------------------------------------------
 # 1. Verify Python is available
 # ---------------------------------------------------------------------------
@@ -56,27 +80,25 @@ Log "uv $(uv --version)"
 # ---------------------------------------------------------------------------
 if (-not (Get-Command git-annex -ErrorAction SilentlyContinue)) {
     Log "Installing git-annex via winget..."
-    $wingetCmd = Get-Command winget -ErrorAction SilentlyContinue
-    if (-not $wingetCmd) {
-        Die @"
-winget is not available. Either install it from the Microsoft Store
-(search for "App Installer"), or install git-annex manually from
-https://git-annex.branchable.com/install/Windows/ and re-run this script.
-"@
-    }
     try {
         winget install --id Joey.GitAnnex --silent --accept-package-agreements --accept-source-agreements
+        if ($LASTEXITCODE -ne 0) { throw "winget exited with $LASTEXITCODE" }
     } catch {
         Die @"
-winget install of git-annex failed. Install it manually from
-https://git-annex.branchable.com/install/Windows/ and re-run this script.
-Error: $_
+winget install of git-annex failed: $_
+Install it manually from
+  https://git-annex.branchable.com/install/Windows/
+then re-run this script.
 "@
     }
-    # winget may put it in Program Files; rehash PATH for the current session.
-    $env:Path = "$env:ProgramFiles\Git-Annex\bin;$env:Path"
+    Refresh-Path
+    # Defensive fallback in case the registry hasn't reflected the new
+    # PATH yet (some Windows builds are slow about this).
     if (-not (Get-Command git-annex -ErrorAction SilentlyContinue)) {
-        Die "git-annex was installed but is not yet on PATH. Open a new PowerShell window and re-run this script."
+        $env:Path = "$env:ProgramFiles\Git-Annex\bin;$env:Path"
+    }
+    if (-not (Get-Command git-annex -ErrorAction SilentlyContinue)) {
+        Die "git-annex installed but not on PATH. Open a new PowerShell window and re-run this script."
     }
 }
 Log "git-annex $(git-annex version --raw)"
