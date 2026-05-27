@@ -193,11 +193,28 @@ if (-not (Get-Command make -ErrorAction SilentlyContinue)) {
 }
 Log "make $((& make --version | Select-Object -First 1))"
 
-if (-not (Get-Command gcc -ErrorAction SilentlyContinue)) {
-    Log "Installing MinGW-w64 (gcc; needed by stable-retro)..."
-    choco install mingw -y --no-progress --limit-output
-    if ($LASTEXITCODE -ne 0) { Die "choco install mingw failed (exit $LASTEXITCODE)." }
+# Pin MinGW to 13.2.0 (GCC 13). MinGW 15.x (GCC 15) enforces stricter
+# C prototype semantics: `void f();` now means `void f(void)` rather
+# than "unspecified arguments", which makes stable-retro's NES core
+# fail to compile (src/fds.c declares FDSSound() then defines
+# FDSSound(int c)). The windows-latest runner preinstalls MinGW 15
+# at C:\mingw64, so we install 13.2.0 via choco AND prepend its bin
+# directory to PATH so it wins over the system one.
+$currentGccMajor = $null
+if (Get-Command gcc -ErrorAction SilentlyContinue) {
+    $currentGccMajor = (& gcc -dumpversion 2>&1) -split '\.' | Select-Object -First 1
+}
+if ($currentGccMajor -ne "13") {
+    Log "Installing MinGW-w64 13.2.0 via choco (current gcc major: '$currentGccMajor')..."
+    choco install mingw --version=13.2.0 -y --no-progress --limit-output --force
+    if ($LASTEXITCODE -ne 0) { Die "choco install mingw 13.2.0 failed (exit $LASTEXITCODE)." }
     Refresh-Path
+    $chocoGcc = Get-ChildItem -Path "C:\ProgramData\chocolatey\lib\mingw" -Filter "gcc.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $chocoGcc) {
+        Die "choco mingw 13.2.0 installed but gcc.exe not found under C:\ProgramData\chocolatey\lib\mingw."
+    }
+    $env:Path = "$($chocoGcc.DirectoryName);$env:Path"
+    Log "Prepended $($chocoGcc.DirectoryName) to PATH."
 }
 Log "gcc $((& gcc --version | Select-Object -First 1))"
 
