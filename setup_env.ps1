@@ -209,12 +209,31 @@ if ($currentGccMajor -ne "13") {
     choco install mingw --version=13.2.0 -y --no-progress --limit-output --force
     if ($LASTEXITCODE -ne 0) { Die "choco install mingw 13.2.0 failed (exit $LASTEXITCODE)." }
     Refresh-Path
-    $chocoGcc = Get-ChildItem -Path "C:\ProgramData\chocolatey\lib\mingw" -Filter "gcc.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $chocoGcc) {
-        Die "choco mingw 13.2.0 installed but gcc.exe not found under C:\ProgramData\chocolatey\lib\mingw."
+    # The choco mingw package puts binaries under one of a few different
+    # locations depending on version. Check the common ones.
+    $candidates = @(
+        "C:\ProgramData\mingw64\mingw64\bin",
+        "C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin",
+        "C:\tools\mingw64\bin"
+    )
+    $found = $candidates | Where-Object { Test-Path (Join-Path $_ "gcc.exe") } | Select-Object -First 1
+    if (-not $found) {
+        # Last-ditch deep search.
+        $hit = Get-ChildItem -Path "C:\ProgramData", "C:\tools" -Filter "gcc.exe" -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.DirectoryName -match "13(\.2)?(\.0)?" } |
+            Select-Object -First 1
+        if ($hit) { $found = $hit.DirectoryName }
     }
-    $env:Path = "$($chocoGcc.DirectoryName);$env:Path"
-    Log "Prepended $($chocoGcc.DirectoryName) to PATH."
+    if (-not $found) {
+        Die "choco mingw 13.2.0 installed but gcc.exe not found under any expected path."
+    }
+    $env:Path = "$found;$env:Path"
+    Log "Prepended $found to PATH."
+    # Sanity: confirm gcc on PATH is now 13.x.
+    $newMajor = (& gcc -dumpversion 2>&1) -split '\.' | Select-Object -First 1
+    if ($newMajor -ne "13") {
+        Die "After prepending $found, gcc major is still '$newMajor' (wanted 13). System PATH still wins; check install."
+    }
 }
 Log "gcc $((& gcc --version | Select-Object -First 1))"
 
