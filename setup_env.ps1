@@ -387,6 +387,21 @@ try {
     Pop-Location
 }
 
+# Apply the src/utils.h cstdint patch. On Windows the file uses int64_t
+# without including <cstdint>; on Linux a transitive header pulls it in.
+$utilsFile = Join-Path $StableRetroDir "src\utils.h"
+$utilsContent = Get-Content $utilsFile -Raw
+if ($utilsContent -notmatch "mario_task-patch: cstdint") {
+    Log "Patching stable-retro/src/utils.h to include <cstdint> (int64_t fix)..."
+    $utilsContent = $utilsContent -replace `
+        '(?m)^(#include <vector>)', `
+        '$1' + "`r`n#include <cstdint> // mario_task-patch: cstdint -- int64_t used below"
+    Set-Content -NoNewline -Path $utilsFile -Value $utilsContent
+    if ((Get-Content $utilsFile -Raw) -notmatch "mario_task-patch: cstdint") {
+        Die "src/utils.h patch did not stick. Inspect $utilsFile."
+    }
+}
+
 # Apply the fbneo skip patch. Marker prevents re-applying.
 # Use a regex so CRLF (Windows) and LF (Linux) checkouts both match.
 $cmakeFile = Join-Path $StableRetroDir "CMakeLists.txt"

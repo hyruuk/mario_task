@@ -172,6 +172,22 @@ fi
   git checkout "${STABLE_RETRO_REV}"
   git submodule update --init --recursive --depth 1 )
 
+# Apply the src/utils.h cstdint patch (idempotent via marker). On Linux
+# transitive headers pull in <cstdint>, but on Windows/MinGW they don't,
+# so int64_t isn't declared when this header is processed.
+UTILS_FILE="${STABLE_RETRO_DIR}/src/utils.h"
+if ! grep -q "mario_task-patch: cstdint" "${UTILS_FILE}"; then
+  log "Patching stable-retro/src/utils.h to include <cstdint>"
+  python3 - <<PYEOF
+import pathlib
+p = pathlib.Path(r"${UTILS_FILE}")
+text = p.read_text()
+old = "#include <vector>"
+new = "#include <vector>\n#include <cstdint> // mario_task-patch: cstdint -- int64_t used below"
+p.write_text(text.replace(old, new, 1))
+PYEOF
+fi
+
 # Apply the fbneo skip patch. Idempotent via the marker.
 CMAKE_FILE="${STABLE_RETRO_DIR}/CMakeLists.txt"
 if ! grep -q "mario_task-patch: skip fbneo" "${CMAKE_FILE}"; then
