@@ -32,7 +32,7 @@ For operators on a Windows 10 / 11 deploy box. **Internet required** for the fir
 4. Open the extracted folder and **double-click `install.bat`**.
    - If Windows SmartScreen warns about an unknown publisher, click **More info** → **Run anyway**.
    - If a UAC prompt appears, click **Yes**.
-5. Wait for **"Setup complete!"**. First run is ~5 minutes (Python install + dependency resolve + ROM download).
+5. Wait for **"Setup complete!"**. First run is **~30-45 minutes** and downloads **~5 GB** — most of it is MSVC Build Tools (one-time, needed to compile `stable-retro`, which doesn't ship a Windows wheel). Subsequent reinstalls are seconds because everything's cached.
 6. A new **"Run Mario Task"** shortcut appears on your desktop. Double-click it to launch.
 7. **First launch only** — fill in the configuration wizard (trigger backend, enabled levels, etc.) and click Save.
 8. **Every session** — the subject picker opens. Pick or type a subject label, click Start session.

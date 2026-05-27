@@ -89,17 +89,20 @@ Log "uv $(uv --version)"
 #     from source -- there's no Windows wheel on PyPI).
 # ---------------------------------------------------------------------------
 function Test-MSVC {
+    # We need vcvars64.bat reachable -- that's the script stable-retro's
+    # setup.py invokes (via setuptools' msvc helper) to set up the C++
+    # compiler env. Querying vswhere with `-property installationPath`
+    # gives us a single path string per matching VS instance.
     $vswhere = Join-Path "${env:ProgramFiles(x86)}" "Microsoft Visual Studio\Installer\vswhere.exe"
     if (-not (Test-Path $vswhere)) { return $false }
-    $instances = & $vswhere -products "*" `
+    $paths = & $vswhere -latest -prerelease -products * `
         -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-        -format json 2>$null
-    if (-not $instances) { return $false }
-    try {
-        return ((ConvertFrom-Json -InputObject $instances).Count -gt 0)
-    } catch {
-        return $false
-    }
+        -property installationPath 2>$null
+    if (-not $paths) { return $false }
+    # vswhere can emit multiple lines for multiple instances; take the first.
+    $first = ($paths | Select-Object -First 1)
+    if ([string]::IsNullOrWhiteSpace($first)) { return $false }
+    return (Test-Path (Join-Path $first.Trim() "VC\Auxiliary\Build\vcvars64.bat"))
 }
 
 if (-not (Test-MSVC)) {
@@ -119,11 +122,22 @@ Install manually from https://aka.ms/vs/17/release/vs_BuildTools.exe
 "@
     }
     Refresh-Path
-    if (-not (Test-MSVC)) {
-        Die "MSVC Build Tools installed but Test-MSVC still says no. Reboot and re-run."
-    }
+    # Trust winget's exit code; don't re-gate on Test-MSVC, which can
+    # lag behind the installer (the VS Installer registry write may not
+    # flush before this script continues). If MSVC is genuinely missing,
+    # uv sync will surface a "cl.exe not found" error downstream.
 }
-Log "MSVC Build Tools detected."
+# Helpful diagnostic so we can see which VS instance was picked.
+$vswhereExe = Join-Path "${env:ProgramFiles(x86)}" "Microsoft Visual Studio\Installer\vswhere.exe"
+if (Test-Path $vswhereExe) {
+    $vsInst = & $vswhereExe -latest -prerelease -products * `
+        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+        -property installationPath 2>$null | Select-Object -First 1
+    if ($vsInst) { Log "MSVC Build Tools at: $vsInst" }
+    else { Warn "No VS instance with VC.Tools.x86.x64 visible to vswhere; continuing anyway." }
+} else {
+    Warn "vswhere.exe not found; cannot verify MSVC. Continuing anyway."
+}
 
 # CMake is needed by stable-retro's setup.py; not bundled with VS BuildTools' VCTools workload.
 if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
