@@ -194,12 +194,47 @@ if (-not (Get-Command make -ErrorAction SilentlyContinue)) {
 Log "make $((& make --version | Select-Object -First 1))"
 
 if (-not (Get-Command gcc -ErrorAction SilentlyContinue)) {
-    Log "Installing MinGW-w64 (gcc + libz; needed by stable-retro)..."
+    Log "Installing MinGW-w64 (gcc; needed by stable-retro)..."
     choco install mingw -y --no-progress --limit-output
     if ($LASTEXITCODE -ne 0) { Die "choco install mingw failed (exit $LASTEXITCODE)." }
     Refresh-Path
 }
 Log "gcc $((& gcc --version | Select-Object -First 1))"
+
+# ---------------------------------------------------------------------------
+# 2f. zlib via vcpkg for stable-retro.
+# ---------------------------------------------------------------------------
+# stable-retro's CMakeLists.txt:87 does find_package(ZLIB). The choco
+# MinGW distribution doesn't actually ship libz in a path cmake's
+# FindZLIB module locates, so we install zlib explicitly via vcpkg and
+# tell cmake about it through STABLE_RETRO_CMAKE_ARGS later.
+$VcpkgRoot = if (Test-Path "C:\vcpkg\vcpkg.exe") {
+    "C:\vcpkg"  # preinstalled on GitHub Actions windows-latest
+} else {
+    Join-Path $RootDir ".vcpkg"
+}
+
+if (-not (Test-Path (Join-Path $VcpkgRoot "vcpkg.exe"))) {
+    if (-not (Test-Path $VcpkgRoot)) {
+        Log "Cloning vcpkg into $VcpkgRoot ..."
+        git clone --depth 1 https://github.com/microsoft/vcpkg $VcpkgRoot
+        if ($LASTEXITCODE -ne 0) { Die "git clone vcpkg failed (exit $LASTEXITCODE)." }
+    }
+    Log "Bootstrapping vcpkg..."
+    & (Join-Path $VcpkgRoot "bootstrap-vcpkg.bat") -disableMetrics
+    if ($LASTEXITCODE -ne 0) { Die "vcpkg bootstrap failed (exit $LASTEXITCODE)." }
+}
+Log "vcpkg at $VcpkgRoot"
+
+# Idempotent: vcpkg install is a no-op if the package is already there.
+Log "Installing zlib (x64-mingw-dynamic) via vcpkg..."
+& (Join-Path $VcpkgRoot "vcpkg.exe") install "zlib:x64-mingw-dynamic" --clean-after-build
+if ($LASTEXITCODE -ne 0) { Die "vcpkg install zlib failed (exit $LASTEXITCODE)." }
+
+# Forward slashes avoid quoting headaches when this gets shlex-split
+# by stable-retro's setup.py.
+$VcpkgRootSlash = $VcpkgRoot -replace '\\', '/'
+$ToolchainFile  = "$VcpkgRootSlash/scripts/buildsystems/vcpkg.cmake"
 
 # ---------------------------------------------------------------------------
 # 3. Install git-annex (required by datalad for the ROM fetch)
@@ -292,11 +327,10 @@ try {
     # stable-retro's setup.py hardcodes `cmake -G "Unix Makefiles"` but
     # appends our extra args after, and cmake honors the LAST -G in the
     # arg list. Overriding to "MinGW Makefiles" makes cmake configure
-    # its toolchain against the MinGW gcc we just installed, which
-    # finds libz inside MinGW's sysroot (FindZLIB.cmake fails under the
-    # default Unix Makefiles generator on Windows because there's no
-    # system zlib for it to locate).
-    $env:STABLE_RETRO_CMAKE_ARGS = '-G "MinGW Makefiles"'
+    # its toolchain against the MinGW gcc we installed above.
+    # Pointing at the vcpkg toolchain file makes find_package(ZLIB)
+    # locate the zlib we installed in stage 2f.
+    $env:STABLE_RETRO_CMAKE_ARGS = "-G `"MinGW Makefiles`" -DCMAKE_TOOLCHAIN_FILE=$ToolchainFile -DVCPKG_TARGET_TRIPLET=x64-mingw-dynamic"
     uv sync --extra dev
     if ($LASTEXITCODE -ne 0) {
         Die @"
