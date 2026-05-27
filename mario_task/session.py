@@ -198,6 +198,7 @@ def run_session(config: RunConfig) -> int:
             source_id=config.settings.triggers.lsl_stream_source_id,
         ),
         codes=config.settings.triggers.codes,
+        trigger_every=config.settings.triggers.trigger_every,
     )
 
     # 5. Register the retro custom path so it can find SuperMarioBros-Nes.

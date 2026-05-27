@@ -55,6 +55,13 @@ class TriggerSettings:
     lsl_stream_type: str = "Markers"
     lsl_stream_source_id: str = "mario_task_markers"
     codes: TriggerCodes = field(default_factory=TriggerCodes)
+    # Decimation: emit one gameplay marker per N emulator frames.
+    # 1 = every frame (legacy). Raise to throttle a saturated amplifier.
+    # The cycling byte value (codes.game_frame_mod) increments per *sent*
+    # trigger, not per emulator frame, so the rolling counter still
+    # advances at 1/N of the bk2 rate. The .log line `trigger_sent
+    # frame=...` records the emulator-frame index of every sent trigger.
+    trigger_every: int = 1
 
 
 @dataclass(frozen=True)
@@ -204,6 +211,11 @@ def _validate(s: Settings) -> None:
             f"(e.g. '/dev/ttyACM0', 'COM3', '/dev/parport1')."
         )
     _validate_codes(s.triggers.codes)
+    if s.triggers.trigger_every < 1:
+        raise ValueError(
+            f"triggers.trigger_every={s.triggers.trigger_every} must be ≥ 1 "
+            f"(1 = a trigger every emulator frame, N = every Nth)."
+        )
     if s.task.max_duration_seconds <= 0:
         raise ValueError(
             f"task.max_duration_seconds must be > 0, got {s.task.max_duration_seconds}"

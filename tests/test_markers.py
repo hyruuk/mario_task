@@ -191,6 +191,47 @@ def test_configure_serial_with_missing_port_device_falls_back(caplog: pytest.Log
     assert isinstance(backend, _NullBackend)
 
 
+# ---------------------------------------------------------------------------
+# trigger_every (gameplay marker decimation)
+# ---------------------------------------------------------------------------
+
+
+def test_trigger_every_defaults_to_one() -> None:
+    assert markers.get_trigger_every() == 1
+
+
+def test_configure_sets_trigger_every() -> None:
+    markers.configure("null", trigger_every=4)
+    assert markers.get_trigger_every() == 4
+
+
+def test_configure_without_trigger_every_keeps_previous() -> None:
+    markers.set_trigger_every(3)
+    markers.configure("null")  # no trigger_every kwarg
+    assert markers.get_trigger_every() == 3
+
+
+def test_set_trigger_every_rejects_zero_and_negative() -> None:
+    with pytest.raises(ValueError):
+        markers.set_trigger_every(0)
+    with pytest.raises(ValueError):
+        markers.set_trigger_every(-1)
+
+
+def test_trigger_every_decimation_pattern() -> None:
+    """For trigger_every=4, frames 1, 5, 9, 13 emit; byte cycles per send."""
+    markers.set_trigger_every(4)
+    n = markers.get_trigger_every()
+    sent = []
+    for level_step in range(1, 14):
+        if (level_step - 1) % n == 0:
+            trigger_idx = (level_step - 1) // n
+            sent.append((level_step, encode_frame(trigger_idx)))
+    assert [s[0] for s in sent] == [1, 5, 9, 13]
+    # Byte values cycle per *sent* trigger, not per emulator frame.
+    assert [s[1] for s in sent] == [16, 17, 18, 19]
+
+
 def test_send_signal_with_no_prior_configure_uses_lazy_init(monkeypatch: pytest.MonkeyPatch) -> None:
     """Calling send_signal() before configure() must auto-init (LSL default).
 

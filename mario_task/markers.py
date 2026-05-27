@@ -81,6 +81,11 @@ class TriggerCodes:
 # accesses keep working.
 _codes: TriggerCodes = TriggerCodes()
 
+# Decimation factor for gameplay markers. 1 = every emulator frame; N = one
+# trigger per N frames. The engine reads this via :func:`get_trigger_every`
+# and decides whether to call :func:`send_signal` on each step.
+_trigger_every: int = 1
+
 
 def set_codes(codes: TriggerCodes) -> None:
     """Override the active trigger code scheme.
@@ -96,6 +101,22 @@ def set_codes(codes: TriggerCodes) -> None:
 def get_codes() -> TriggerCodes:
     """Return the currently active :class:`TriggerCodes`."""
     return _codes
+
+
+def set_trigger_every(n: int) -> None:
+    """Override the gameplay-marker decimation factor.
+
+    Normally :func:`configure` handles this. Exposed for tests.
+    """
+    global _trigger_every
+    if n < 1:
+        raise ValueError(f"trigger_every must be ≥ 1, got {n}")
+    _trigger_every = int(n)
+
+
+def get_trigger_every() -> int:
+    """Return the active gameplay-marker decimation factor (1 = every frame)."""
+    return _trigger_every
 
 
 def __getattr__(name: str) -> Any:
@@ -282,6 +303,7 @@ def configure(
     port: str | None = None,
     stream: StreamConfig | None = None,
     codes: TriggerCodes | None = None,
+    trigger_every: int | None = None,
 ) -> _Backend:
     """Pick the active marker transport. Returns the resolved backend.
 
@@ -304,6 +326,8 @@ def configure(
     global _backend
     if codes is not None:
         set_codes(codes)
+    if trigger_every is not None:
+        set_trigger_every(trigger_every)
     backend = backend.lower()
     try:
         if backend == "lsl":
@@ -364,6 +388,7 @@ def now() -> float:
 
 def _reset_for_tests() -> None:
     """Drop the active backend AND reset codes to defaults. Used by tests."""
-    global _backend, _codes
+    global _backend, _codes, _trigger_every
     _backend = None
     _codes = TriggerCodes()
+    _trigger_every = 1

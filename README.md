@@ -30,6 +30,23 @@ bash run.sh sub01 01     # first run launches the config wizard
 4. After each run, a prompt appears: **X** to continue with another run, **Z** to end the session.
 5. **Ctrl+C** during a run aborts cleanly without advancing the savestate.
 
+## Serial trigger permissions
+
+If the markers backend is set to `serial` (e.g. `/dev/ttyUSB0`) and you see:
+
+```
+mario_task.markers WARNING: Falling back to NullBackend (markers will be dropped):
+[Errno 13] could not open port /dev/ttyUSB0: [Errno 13] Permission denied
+```
+
+your user is not in the `dialout` group. Add it once:
+
+```bash
+sudo usermod -aG dialout $USER
+```
+
+Then log out and back in (or reboot) for the new group to take effect. Verify with `groups | grep dialout`.
+
 ## Output layout
 
 ```

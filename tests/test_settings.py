@@ -130,6 +130,19 @@ def test_validate_accepts_game_frame_base_16_with_mod_16(tmp_path) -> None:
     settings.save(tmp_path / "config.json", ok)  # no exception
 
 
+def test_validate_rejects_trigger_every_below_one(tmp_path) -> None:
+    bad = Settings(triggers=TriggerSettings(trigger_every=0))
+    with pytest.raises(ValueError, match="trigger_every"):
+        settings.save(tmp_path / "config.json", bad)
+
+
+def test_round_trip_trigger_every(tmp_path) -> None:
+    cfg_path = tmp_path / "config.json"
+    settings.save(cfg_path, Settings(triggers=TriggerSettings(trigger_every=4)))
+    loaded = settings.load_from_file(cfg_path)
+    assert loaded.triggers.trigger_every == 4
+
+
 def test_env_var_disables_questionnaire() -> None:
     s = load(
         config_path=None,

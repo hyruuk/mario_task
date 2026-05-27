@@ -209,8 +209,25 @@ def run_emulator(
         # dropped below. Capture the LSL clock *immediately* after step()
         # so the sample is stamped with the engine's frame-advance time
         # rather than the (later) push time.
-        if task.use_eeg and markers.EEG_MARKERS_ON_FLIP:
-            markers.send_signal(markers.encode_frame(level_step), timestamp=markers.now())
+        #
+        # Decimation: triggers.trigger_every=N emits one trigger per N
+        # frames (f1, f1+N, f1+2N, ...). The cycling byte value
+        # (codes.game_frame_mod) advances per *sent* trigger, not per
+        # emulator frame. The .log line below records the bk2-frame index
+        # of every sent trigger so analysts can re-align after the fact.
+        trigger_every = markers.get_trigger_every()
+        if (
+            task.use_eeg
+            and markers.EEG_MARKERS_ON_FLIP
+            and (level_step - 1) % trigger_every == 0
+        ):
+            trigger_idx = (level_step - 1) // trigger_every
+            value = markers.encode_frame(trigger_idx)
+            markers.send_signal(value, timestamp=markers.now())
+            logging.exp(
+                f"trigger_sent frame={level_step} trigger_idx={trigger_idx} "
+                f"value={value} trigger_every={trigger_every}"
+            )
 
         # gymnasium returns 5-tuples (obs, rew, terminated, truncated, info);
         # legacy gym returns 4-tuples (obs, rew, done, info).
