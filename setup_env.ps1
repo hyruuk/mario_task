@@ -153,36 +153,56 @@ Log "CMake $((& cmake --version | Select-Object -First 1) -replace 'cmake versio
 # ---------------------------------------------------------------------------
 # 3. Install git-annex (required by datalad for the ROM fetch)
 # ---------------------------------------------------------------------------
+# Strategy: prefer Chocolatey when available. The kitenet Inno installer
+# hangs in non-interactive sessions (GitHub Actions runners, automation),
+# because the silent flags don't suppress the elevation prompt -- which
+# never resolves when no human is at the keyboard. Choco wraps the same
+# Inno installer with its own elevation handling and runs to completion.
+# On operator boxes without choco we fall back to running the Inno
+# installer directly; the operator sees and clicks through the UAC
+# prompt themselves.
 if (-not (Get-Command git-annex -ErrorAction SilentlyContinue)) {
-    # winget for Joey.GitAnnex is unreliable on fresh boxes (the source
-    # database may need re-init) and outright broken on GitHub Actions
-    # runners. Direct download of the official Inno Setup installer is
-    # both simpler and more reliable on every Windows we've tried.
-    $gitAnnexUrl = "https://downloads.kitenet.net/git-annex/windows/current/git-annex-installer.exe"
-    $installer = Join-Path $env:TEMP "git-annex-installer.exe"
-    Log "Downloading git-annex installer from $gitAnnexUrl ..."
-    try {
-        Invoke-WebRequest -Uri $gitAnnexUrl -OutFile $installer -UseBasicParsing
-    } catch {
-        Die @"
+    if (Get-Command choco -ErrorAction SilentlyContinue) {
+        Log "Installing git-annex via Chocolatey..."
+        choco install git-annex -y --no-progress --limit-output
+        if ($LASTEXITCODE -ne 0) {
+            Die @"
+choco install git-annex failed (exit $LASTEXITCODE).
+Install manually from https://git-annex.branchable.com/install/Windows/
+then re-run this script.
+"@
+        }
+        Refresh-Path
+    } else {
+        $gitAnnexUrl = "https://downloads.kitenet.net/git-annex/windows/current/git-annex-installer.exe"
+        $installer = Join-Path $env:TEMP "git-annex-installer.exe"
+        Log "Downloading git-annex installer from $gitAnnexUrl ..."
+        try {
+            Invoke-WebRequest -Uri $gitAnnexUrl -OutFile $installer -UseBasicParsing
+        } catch {
+            Die @"
 Could not download git-annex installer from $gitAnnexUrl
 ($_)
 Install it manually from https://git-annex.branchable.com/install/Windows/
 then re-run this script.
 "@
+        }
+        Log "Running the git-annex installer..."
+        Log "  A User Account Control prompt will appear -- click 'Yes' to allow it."
+        # Standard Inno Setup silent flags: VERYSILENT skips all UI;
+        # SUPPRESSMSGBOXES kills the few prompts /VERYSILENT misses;
+        # SP- skips the "this will install" preamble; NORESTART = no reboot.
+        # NOTE: do not invoke this branch from a non-interactive session
+        # (CI, scheduled task, etc.) -- the UAC prompt has no way to resolve.
+        $process = Start-Process -FilePath $installer `
+            -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/SP-","/NORESTART" `
+            -Wait -PassThru
+        Remove-Item $installer -Force -ErrorAction SilentlyContinue
+        if ($process.ExitCode -ne 0) {
+            Die "git-annex installer exited with $($process.ExitCode)."
+        }
+        Refresh-Path
     }
-    Log "Running silent install (this may pop a UAC prompt on real machines)..."
-    # Standard Inno Setup silent flags: VERYSILENT skips all UI;
-    # SUPPRESSMSGBOXES kills the few prompts /VERYSILENT misses;
-    # SP- skips the "this will install" preamble; NORESTART = no reboot.
-    $process = Start-Process -FilePath $installer `
-        -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/SP-","/NORESTART" `
-        -Wait -PassThru
-    Remove-Item $installer -Force -ErrorAction SilentlyContinue
-    if ($process.ExitCode -ne 0) {
-        Die "git-annex installer exited with $($process.ExitCode)."
-    }
-    Refresh-Path
     # The installer drops binaries under one of two locations depending
     # on whether it installed system-wide or per-user. Add both as
     # fallbacks in case the registry hasn't reflected the change yet.
