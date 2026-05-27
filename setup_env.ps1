@@ -388,22 +388,26 @@ try {
 }
 
 # Apply the fbneo skip patch. Marker prevents re-applying.
+# Use a regex so CRLF (Windows) and LF (Linux) checkouts both match.
 $cmakeFile = Join-Path $StableRetroDir "CMakeLists.txt"
 $content = Get-Content $cmakeFile -Raw
 if ($content -notmatch "mario_task-patch: skip fbneo") {
     Log "Patching stable-retro/CMakeLists.txt to skip fbneo + parallel_n64 on Windows..."
     # The upstream block is:
     #   if(APPLE)
-    #     message(WARNING "FBNeo arcade and parallel N64 emulator is currently not supported on macOS")
+    #     message(
+    #       WARNING
+    #         "FBNeo arcade and parallel N64 emulator is currently not supported on macOS"
+    #     )
     #   else()
     #     add_core(fbneo fbneo)
-    # We widen the condition so Windows takes the skip branch too.
-    $oldText = "if(APPLE)`n  message(`n    WARNING`n      `"FBNeo arcade and parallel N64 emulator is currently not supported on macOS`"`n  )`nelse()`n  add_core(fbneo fbneo)"
-    $newText = "if(APPLE OR WIN32) # mario_task-patch: skip fbneo + parallel_n64 on Windows`n  message(`n    WARNING`n      `"FBNeo arcade and parallel N64 emulator is not supported on this platform (mario_task-patch)`"`n  )`nelse()`n  add_core(fbneo fbneo)"
-    if ($content -notmatch [regex]::Escape("if(APPLE)`n  message(")) {
+    # Widening the condition makes the WIN32 path take the skip branch.
+    $pattern = '(?ms)^if\(APPLE\)\s*\r?\n\s*message\(\s*\r?\n\s*WARNING\s*\r?\n\s*"FBNeo arcade and parallel N64 emulator is currently not supported on macOS"\s*\r?\n\s*\)\s*\r?\n\s*else\(\)\s*\r?\n\s*add_core\(fbneo fbneo\)'
+    $replacement = "if(APPLE OR WIN32) # mario_task-patch: skip fbneo + parallel_n64 on Windows`r`n  message(`r`n    WARNING`r`n      `"FBNeo arcade and parallel N64 emulator is not supported on this platform (mario_task-patch)`"`r`n  )`r`nelse()`r`n  add_core(fbneo fbneo)"
+    if ($content -notmatch $pattern) {
         Die "Could not locate the fbneo skip patch target in stable-retro CMakeLists.txt; upstream layout may have changed."
     }
-    $content = $content.Replace($oldText, $newText)
+    $content = [regex]::Replace($content, $pattern, $replacement)
     Set-Content -NoNewline -Path $cmakeFile -Value $content
     if ((Get-Content $cmakeFile -Raw) -notmatch "mario_task-patch") {
         Die "Patch applied but marker not visible afterwards. Inspect $cmakeFile."
