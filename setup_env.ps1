@@ -403,9 +403,8 @@ foreach ($rel in $headersNeedingCstdint) {
     Log "Patching $rel to include <cstdint>..."
     # Inject after the #pragma once (every header has one) -- avoids
     # depending on a specific #include line being present.
-    $patched = $hcontent -replace `
-        '(?m)^(#pragma once)', `
-        '$1' + "`r`n#include <cstdint> // mario_task-patch: cstdint -- fixed-width int types used below"
+    $headerReplacement = '$1' + "`r`n#include <cstdint> // mario_task-patch: cstdint -- fixed-width int types used below"
+    $patched = $hcontent -replace '(?m)^(#pragma once)', $headerReplacement
     Set-Content -NoNewline -Path $headerFile -Value $patched
     if ((Get-Content $headerFile -Raw) -notmatch "mario_task-patch: cstdint") {
         Die "$rel cstdint patch did not stick. Inspect $headerFile."
