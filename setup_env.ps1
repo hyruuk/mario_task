@@ -584,17 +584,13 @@ if ($retroDir) {
             }
         }
     }
-    # python<ver>.dll. Python 3.8+ restricted DLL search means .pyd
-    # imports only search the .pyd directory + os.add_dll_directory
-    # paths; the system Python's bin dir is NOT on that list by
-    # default. Drop python<ver>.dll next to _retro.pyd as a safety net.
-    if ($pyLib -and (Test-Path $pyLib)) {
-        $pyDll = $pyLib -replace '\\libs\\python(\d+)\.lib$', '\python$1.dll'
-        if (Test-Path $pyDll) {
-            Copy-Item -Force $pyDll $dllDest
-            $copied += (Split-Path $pyDll -Leaf)
-        }
-    }
+    # Do NOT copy python<ver>.dll alongside _retro.pyd: Python detects
+    # the duplicate load and aborts with "Module use of pythonNNN.dll
+    # conflicts with this version of Python." The system Python's
+    # python<ver>.dll is reachable to extension modules via
+    # sys.base_prefix; we surface that to the loader explicitly through
+    # os.add_dll_directory(sys.base_prefix) in the smoke test and in
+    # mario_task/__init__.py (see _ensure_retro_dll_path).
     Log "Copied $($copied.Count) DLLs into $dllDest : $($copied -join ', ')"
 
     # Diagnostic: list _retro.pyd's actual declared DLL deps via objdump.
