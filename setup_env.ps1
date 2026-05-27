@@ -552,6 +552,37 @@ Try manually:
 Log ("ROM is real: " + (Get-Item $MarioRom).Length + " bytes")
 
 # ---------------------------------------------------------------------------
+# 5b. Copy runtime DLLs next to stable_retro/_retro*.pyd
+# ---------------------------------------------------------------------------
+# _retro.pyd was built dynamically against vcpkg's libz and MinGW's
+# runtime (libgcc_s_seh-1, libstdc++-6, libwinpthread-1). At import
+# time Python's loader has to find those DLLs; the cleanest fix is to
+# copy them into the same directory as _retro.pyd so it doesn't depend
+# on the operator having MinGW or vcpkg on PATH.
+$retroDir = Get-ChildItem -Path (Join-Path $VenvDir "Lib\site-packages") -Filter "stable_retro" -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($retroDir) {
+    $dllDest = $retroDir.FullName
+    # vcpkg's libz DLL.
+    $vcpkgBin = Join-Path $VcpkgRoot "installed\x64-mingw-dynamic\bin"
+    if (Test-Path $vcpkgBin) {
+        Get-ChildItem -Path $vcpkgBin -Filter "*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
+            Copy-Item -Force $_.FullName $dllDest
+        }
+    }
+    # MinGW runtime DLLs from wherever choco's gcc lives.
+    if ($env:CC) {
+        $mingwBin = Split-Path $env:CC -Parent
+        foreach ($dll in @("libgcc_s_seh-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll")) {
+            $src = Join-Path $mingwBin $dll
+            if (Test-Path $src) { Copy-Item -Force $src $dllDest }
+        }
+    }
+    Log "Copied runtime DLLs into $dllDest"
+} else {
+    Warn "stable_retro package dir not found under venv; skipping DLL copy."
+}
+
+# ---------------------------------------------------------------------------
 # 6. Smoke test
 # ---------------------------------------------------------------------------
 Log "Smoke testing imports..."
