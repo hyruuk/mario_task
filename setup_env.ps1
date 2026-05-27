@@ -151,6 +151,57 @@ if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
 Log "CMake $((& cmake --version | Select-Object -First 1) -replace 'cmake version ','')"
 
 # ---------------------------------------------------------------------------
+# 2d. Chocolatey bootstrap.
+# ---------------------------------------------------------------------------
+# We use choco for several Windows tooling installs below (git-annex,
+# GNU make, MinGW). On GitHub Actions runners choco is preinstalled.
+# On a fresh operator box it usually isn't, but the official install
+# script is a small one-liner.
+if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
+    Log "Installing Chocolatey package manager..."
+    Set-ExecutionPolicy Bypass -Scope Process -Force
+    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+    try {
+        Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+    } catch {
+        Die @"
+Chocolatey install failed: $_
+Install manually following https://chocolatey.org/install , then re-run this script.
+"@
+    }
+    Refresh-Path
+    if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
+        Die "choco still not on PATH after install. Open a new PowerShell window and re-run this script."
+    }
+}
+Log "choco $(choco --version)"
+
+# ---------------------------------------------------------------------------
+# 2e. GNU make + MinGW.
+# ---------------------------------------------------------------------------
+# stable-retro's setup.py hardcodes `cmake -G "Unix Makefiles"` followed
+# by `subprocess.check_call(["make", "-j"])`. On Windows that requires:
+#   - make.exe -- GNU make (the choco `make` package).
+#   - gcc/g++  -- a Unix-style toolchain. choco `mingw` provides MinGW-w64.
+#   - zlib     -- via cmake's find_package(ZLIB). MinGW ships libz with
+#                 its sysroot, so installing mingw also satisfies this.
+if (-not (Get-Command make -ErrorAction SilentlyContinue)) {
+    Log "Installing GNU make (needed by stable-retro)..."
+    choco install make -y --no-progress --limit-output
+    if ($LASTEXITCODE -ne 0) { Die "choco install make failed (exit $LASTEXITCODE)." }
+    Refresh-Path
+}
+Log "make $((& make --version | Select-Object -First 1))"
+
+if (-not (Get-Command gcc -ErrorAction SilentlyContinue)) {
+    Log "Installing MinGW-w64 (gcc + libz; needed by stable-retro)..."
+    choco install mingw -y --no-progress --limit-output
+    if ($LASTEXITCODE -ne 0) { Die "choco install mingw failed (exit $LASTEXITCODE)." }
+    Refresh-Path
+}
+Log "gcc $((& gcc --version | Select-Object -First 1))"
+
+# ---------------------------------------------------------------------------
 # 3. Install git-annex (required by datalad for the ROM fetch)
 # ---------------------------------------------------------------------------
 # Strategy: prefer Chocolatey when available. The kitenet Inno installer
