@@ -361,6 +361,57 @@ then re-run this script.
 Log "git-annex $(git-annex version --raw)"
 
 # ---------------------------------------------------------------------------
+# 3b. Vendor stable-retro into .cache/stable-retro and patch.
+# ---------------------------------------------------------------------------
+# pyproject.toml declares stable-retro as a path-source pointing here.
+# We need the runtime patch (skip fbneo / parallel_n64 on Windows --
+# the upstream build is broken on Windows; we only need NES anyway).
+$StableRetroDir = Join-Path $RootDir ".cache\stable-retro"
+$StableRetroRev = "24180f5dcc4ec3ba725f9614823c22ef5c6983ff"
+$StableRetroRepo = "https://github.com/Farama-Foundation/stable-retro"
+if (-not (Test-Path (Join-Path $StableRetroDir ".git"))) {
+    Log "Cloning stable-retro into $StableRetroDir (large; ~600 MB with submodules)..."
+    New-Item -ItemType Directory -Force -Path (Split-Path $StableRetroDir) | Out-Null
+    if (Test-Path $StableRetroDir) { Remove-Item -Recurse -Force $StableRetroDir }
+    git clone $StableRetroRepo $StableRetroDir
+    if ($LASTEXITCODE -ne 0) { Die "git clone stable-retro failed (exit $LASTEXITCODE)." }
+}
+Push-Location $StableRetroDir
+try {
+    git fetch --depth 1 origin $StableRetroRev 2>$null  # may fail if rev already present; ignore
+    git checkout $StableRetroRev
+    if ($LASTEXITCODE -ne 0) { Die "git checkout $StableRetroRev failed (exit $LASTEXITCODE)." }
+    git submodule update --init --recursive --depth 1
+    if ($LASTEXITCODE -ne 0) { Die "git submodule update failed (exit $LASTEXITCODE)." }
+} finally {
+    Pop-Location
+}
+
+# Apply the fbneo skip patch. Marker prevents re-applying.
+$cmakeFile = Join-Path $StableRetroDir "CMakeLists.txt"
+$content = Get-Content $cmakeFile -Raw
+if ($content -notmatch "mario_task-patch: skip fbneo") {
+    Log "Patching stable-retro/CMakeLists.txt to skip fbneo + parallel_n64 on Windows..."
+    # The upstream block is:
+    #   if(APPLE)
+    #     message(WARNING "FBNeo arcade and parallel N64 emulator is currently not supported on macOS")
+    #   else()
+    #     add_core(fbneo fbneo)
+    # We widen the condition so Windows takes the skip branch too.
+    $oldText = "if(APPLE)`n  message(`n    WARNING`n      `"FBNeo arcade and parallel N64 emulator is currently not supported on macOS`"`n  )`nelse()`n  add_core(fbneo fbneo)"
+    $newText = "if(APPLE OR WIN32) # mario_task-patch: skip fbneo + parallel_n64 on Windows`n  message(`n    WARNING`n      `"FBNeo arcade and parallel N64 emulator is not supported on this platform (mario_task-patch)`"`n  )`nelse()`n  add_core(fbneo fbneo)"
+    if ($content -notmatch [regex]::Escape("if(APPLE)`n  message(")) {
+        Die "Could not locate the fbneo skip patch target in stable-retro CMakeLists.txt; upstream layout may have changed."
+    }
+    $content = $content.Replace($oldText, $newText)
+    Set-Content -NoNewline -Path $cmakeFile -Value $content
+    if ((Get-Content $cmakeFile -Raw) -notmatch "mario_task-patch") {
+        Die "Patch applied but marker not visible afterwards. Inspect $cmakeFile."
+    }
+}
+Log "stable-retro at $StableRetroDir (commit $StableRetroRev, patched)."
+
+# ---------------------------------------------------------------------------
 # 4. Virtual environment + project install
 # ---------------------------------------------------------------------------
 Push-Location $RootDir

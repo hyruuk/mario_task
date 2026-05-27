@@ -8,6 +8,7 @@ __pycache__/
 # Virtual environment + cached lockfiles
 .venv/
 .uv-cache/
+.cache/
 
 # Generated at install or runtime
 .local-libs/

@@ -1,6 +1,6 @@
 [project]
 name = "mario_task"
-version = "0.2.14"
+version = "0.2.15"
 description = "NES Super Mario Bros experiment runner with EEG/iEEG markers and BIDS output."
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
@@ -43,12 +43,15 @@ dependencies = [
 wxpython = [
     { url = "https://extras.wxpython.org/wxPython4/extras/linux/gtk3/ubuntu-24.04/wxPython-4.2.2-cp310-cp310-linux_x86_64.whl", marker = "sys_platform == 'linux' and python_version == '3.10'" },
 ]
-# stable-retro: pin to master past 1.0.0 because the 1.0.0 sdist on PyPI
-# omits the top-level `tests/` directory while its CMakeLists.txt has
-# add_subdirectory(tests) -- a packaging bug. Master has the BUILD_TESTS
-# gate that makes this conditional. We pin to a specific commit so the
-# install stays reproducible.
-stable-retro = { git = "https://github.com/Farama-Foundation/stable-retro", rev = "24180f5dcc4ec3ba725f9614823c22ef5c6983ff" }
+# stable-retro: vendored into .cache/stable-retro by setup_env.{sh,ps1}
+# before uv sync runs. We need a local path source (not a git source)
+# because we apply a runtime patch to CMakeLists.txt: skip the fbneo
+# (Final Burn Neo Arcade) and parallel_n64 cores on Windows, where
+# upstream's build doesn't work (fbneo's libretro Makefile assumes a
+# MinGW 3.x layout we don't have; we only need NES for Mario anyway).
+# Pinned via the setup script to commit 24180f5d so the install stays
+# reproducible. .cache/ is gitignored.
+stable-retro = { path = ".cache/stable-retro" }
 
 [project.optional-dependencies]
 dev = [
