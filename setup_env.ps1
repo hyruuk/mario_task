@@ -584,6 +584,17 @@ if ($retroDir) {
             }
         }
     }
+    # python<ver>.dll. Python 3.8+ restricted DLL search means .pyd
+    # imports only search the .pyd directory + os.add_dll_directory
+    # paths; the system Python's bin dir is NOT on that list by
+    # default. Drop python<ver>.dll next to _retro.pyd as a safety net.
+    if ($pyLib -and (Test-Path $pyLib)) {
+        $pyDll = $pyLib -replace '\\libs\\python(\d+)\.lib$', '\python$1.dll'
+        if (Test-Path $pyDll) {
+            Copy-Item -Force $pyDll $dllDest
+            $copied += (Split-Path $pyDll -Leaf)
+        }
+    }
     Log "Copied $($copied.Count) DLLs into $dllDest : $($copied -join ', ')"
 
     # Diagnostic: list _retro.pyd's actual declared DLL deps via objdump.
@@ -602,7 +613,20 @@ if ($retroDir) {
 # ---------------------------------------------------------------------------
 Log "Smoke testing imports..."
 $smokeCode = @'
-import importlib, sys
+import importlib, sys, os, traceback
+# Help the Windows DLL loader find _retro.pyd's runtime deps. Python 3.8+
+# narrowed the .pyd dependency search; setup_env.ps1 already copies the
+# MinGW + zlib + python<ver>.dll alongside _retro.pyd, but in case the
+# resolver still misses something we add a few likely directories.
+import site
+for sp in site.getsitepackages():
+    cand = os.path.join(sp, "stable_retro")
+    if os.path.isdir(cand):
+        os.add_dll_directory(cand)
+# Sys-prefix bin dir holds python<ver>.dll (venv falls back to base).
+for prefix in (sys.prefix, sys.base_prefix):
+    if os.path.isdir(prefix):
+        os.add_dll_directory(prefix)
 mods = [
     "psychopy", "psychopy.visual", "wx", "retro",
     "pandas", "sounddevice", "serial", "pylsl",
@@ -614,7 +638,8 @@ for m in mods:
         importlib.import_module(m)
         print(f"  ok  {m}")
     except Exception as e:
-        print(f"  FAIL {m}: {e}", file=sys.stderr)
+        print(f"  FAIL {m}: {e!r}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
         ok = False
 sys.exit(0 if ok else 1)
 '@

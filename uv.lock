@@ -1083,7 +1083,7 @@ wheels = [
 
 [[package]]
 name = "mario-task"
-version = "0.2.23"
+version = "0.2.24"
 source = { editable = "." }
 dependencies = [
     { name = "datalad" },
