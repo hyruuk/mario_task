@@ -510,10 +510,23 @@ to install it directly, then re-run this script.
 # ---------------------------------------------------------------------------
 # 5. ROM data via datalad (anonymous HTTPS -- no SSH key required)
 # ---------------------------------------------------------------------------
+# Ensure git has a user.email/name globally -- datalad's `git annex init`
+# needs to commit and refuses if git can't auto-detect identity. Operator
+# boxes typically have this set already; fresh CI runners don't.
+$gitEmail = (git config --global user.email 2>$null) -join ""
+if (-not $gitEmail) {
+    Log "Setting placeholder git user.email/name (datalad's git-annex init requires it)..."
+    git config --global user.email "mario_task-installer@local.invalid"
+    git config --global user.name "mario_task installer"
+}
+
 if (-not (Test-Path "$MarioStimuliDir\.git")) {
     Log "Cloning mario.stimuli via datalad (anonymous HTTPS, no credentials)"
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $MarioStimuliDir) | Out-Null
     & (Join-Path $VenvDir "Scripts\datalad.exe") install -s https://github.com/courtois-neuromod/mario.stimuli $MarioStimuliDir
+    if (-not (Test-Path "$MarioStimuliDir\.git")) {
+        Die "datalad install of mario.stimuli did not produce a .git dir. Check the output above."
+    }
 } else {
     Log "mario.stimuli already cloned at $MarioStimuliDir"
 }
