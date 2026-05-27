@@ -227,13 +227,25 @@ if ($currentGccMajor -ne "13") {
     if (-not $found) {
         Die "choco mingw 13.2.0 installed but gcc.exe not found under any expected path."
     }
+    # Remove the system MinGW from PATH so it can't sneak into the
+    # build subprocess. windows-latest preinstalls MinGW 15 at
+    # C:\mingw64; v0.2.13's logs showed PATH-prepend wasn't enough --
+    # the actual compile ended up using C:/mingw64/lib/gcc/.../15.2.0
+    # headers anyway. Strip it.
+    $env:Path = ($env:Path -split ';' | Where-Object {
+        $_ -ne "" -and $_ -notlike "C:\mingw64*"
+    }) -join ';'
     $env:Path = "$found;$env:Path"
-    Log "Prepended $found to PATH."
+    Log "Prepended $found to PATH (and stripped C:\mingw64*)."
     # Sanity: confirm gcc on PATH is now 13.x.
     $newMajor = (& gcc -dumpversion 2>&1) -split '\.' | Select-Object -First 1
     if ($newMajor -ne "13") {
         Die "After prepending $found, gcc major is still '$newMajor' (wanted 13). System PATH still wins; check install."
     }
+    # Belt-and-suspenders: pin CC/CXX so cmake and any other build
+    # tooling latches onto these specific binaries regardless of PATH.
+    $env:CC  = (Join-Path $found "gcc.exe")
+    $env:CXX = (Join-Path $found "g++.exe")
 }
 Log "gcc $((& gcc --version | Select-Object -First 1))"
 
@@ -366,7 +378,10 @@ try {
     # its toolchain against the MinGW gcc we installed above.
     # Pointing at the vcpkg toolchain file makes find_package(ZLIB)
     # locate the zlib we installed in stage 2f.
-    $env:STABLE_RETRO_CMAKE_ARGS = "-G `"MinGW Makefiles`" -DCMAKE_TOOLCHAIN_FILE=$ToolchainFile -DVCPKG_TARGET_TRIPLET=x64-mingw-dynamic"
+    $stableRetroExtra = "-G `"MinGW Makefiles`" -DCMAKE_TOOLCHAIN_FILE=$ToolchainFile -DVCPKG_TARGET_TRIPLET=x64-mingw-dynamic"
+    if ($env:CC)  { $stableRetroExtra += " -DCMAKE_C_COMPILER=$($env:CC   -replace '\\', '/')" }
+    if ($env:CXX) { $stableRetroExtra += " -DCMAKE_CXX_COMPILER=$($env:CXX -replace '\\', '/')" }
+    $env:STABLE_RETRO_CMAKE_ARGS = $stableRetroExtra
     uv sync --extra dev
     if ($LASTEXITCODE -ne 0) {
         Die @"
