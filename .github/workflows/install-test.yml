@@ -31,7 +31,12 @@ on:
 jobs:
   install:
     runs-on: windows-latest
-    timeout-minutes: 30
+    # 60 min covers: MSVC Build Tools install (~5-10 min on a fresh
+    # runner where it's preinstalled it's a no-op, but defensive),
+    # stable-retro source build (~20-30 min on the runner), datalad
+    # fetch (~1 min), pytest (~1 min). 30 min was tight after we
+    # added the MSVC install step in v0.2.4.
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4

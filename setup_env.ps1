@@ -85,6 +85,58 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
 Log "uv $(uv --version)"
 
 # ---------------------------------------------------------------------------
+# 2b. Microsoft Visual C++ Build Tools (required to build stable-retro
+#     from source -- there's no Windows wheel on PyPI).
+# ---------------------------------------------------------------------------
+function Test-MSVC {
+    $vswhere = Join-Path "${env:ProgramFiles(x86)}" "Microsoft Visual Studio\Installer\vswhere.exe"
+    if (-not (Test-Path $vswhere)) { return $false }
+    $instances = & $vswhere -products "*" `
+        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+        -format json 2>$null
+    if (-not $instances) { return $false }
+    try {
+        return ((ConvertFrom-Json -InputObject $instances).Count -gt 0)
+    } catch {
+        return $false
+    }
+}
+
+if (-not (Test-MSVC)) {
+    Log "Installing MSVC Build Tools 2022 (large download, ~3-4 GB, ~5-10 min)..."
+    # The --override flag passes args to the underlying VS installer.
+    # VCTools workload = the C++ build tools; SDK + ATL/MFC are pulled
+    # in as transitive deps. --quiet --wait --nocache makes it batchable.
+    winget install --id Microsoft.VisualStudio.2022.BuildTools --source winget --silent `
+        --accept-package-agreements --accept-source-agreements `
+        --override "--quiet --wait --nocache --add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows11SDK.22621"
+    if ($LASTEXITCODE -ne 0) {
+        Die @"
+MSVC Build Tools install failed (exit $LASTEXITCODE).
+
+Install manually from https://aka.ms/vs/17/release/vs_BuildTools.exe
+(tick "Desktop development with C++"), then re-run this script.
+"@
+    }
+    Refresh-Path
+    if (-not (Test-MSVC)) {
+        Die "MSVC Build Tools installed but Test-MSVC still says no. Reboot and re-run."
+    }
+}
+Log "MSVC Build Tools detected."
+
+# CMake is needed by stable-retro's setup.py; not bundled with VS BuildTools' VCTools workload.
+if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
+    Log "Installing CMake..."
+    winget install --id Kitware.CMake --source winget --silent --accept-package-agreements --accept-source-agreements
+    if ($LASTEXITCODE -ne 0) {
+        Die "CMake install failed (exit $LASTEXITCODE). Install manually from https://cmake.org/download/ and re-run."
+    }
+    Refresh-Path
+}
+Log "CMake $((& cmake --version | Select-Object -First 1) -replace 'cmake version ','')"
+
+# ---------------------------------------------------------------------------
 # 3. Install git-annex (required by datalad for the ROM fetch)
 # ---------------------------------------------------------------------------
 if (-not (Get-Command git-annex -ErrorAction SilentlyContinue)) {
@@ -142,9 +194,23 @@ try {
     if (-not (Test-Path $VenvDir)) {
         Log "Creating virtualenv at $VenvDir"
         uv venv $VenvDir
+        if ($LASTEXITCODE -ne 0) { Die "uv venv failed (exit $LASTEXITCODE)." }
     }
     Log "Installing mario_task and pinned deps from uv.lock (--extra dev)"
+    Log "  (first run takes ~3 min; stable-retro builds from source on Windows)"
     uv sync --extra dev
+    if ($LASTEXITCODE -ne 0) {
+        Die @"
+uv sync failed (exit $LASTEXITCODE).
+
+A common cause on Windows is missing the C++ compiler that stable-retro
+needs to build from source. Install MSVC Build Tools:
+
+  winget install --id Microsoft.VisualStudio.2022.BuildTools --source winget --override "--quiet --add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.Windows11SDK"
+
+(this is ~3-4 GB and takes a while). Then re-run install.bat.
+"@
+    }
 } finally {
     Pop-Location
 }
@@ -152,6 +218,16 @@ try {
 $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
 if (-not (Test-Path $VenvPython)) {
     Die "Expected $VenvPython after uv sync -- install failed."
+}
+$VenvDatalad = Join-Path $VenvDir "Scripts\datalad.exe"
+if (-not (Test-Path $VenvDatalad)) {
+    Die @"
+datalad.exe not at $VenvDatalad after uv sync.
+This usually means uv sync didn't actually finish installing all
+packages (maybe stable-retro's build silently dropped datalad). Try:
+  & '$VenvPython' -m pip install datalad
+to install it directly, then re-run this script.
+"@
 }
 
 # ---------------------------------------------------------------------------
