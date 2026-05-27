@@ -562,22 +562,37 @@ Log ("ROM is real: " + (Get-Item $MarioRom).Length + " bytes")
 $retroDir = Get-ChildItem -Path (Join-Path $VenvDir "Lib\site-packages") -Filter "stable_retro" -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($retroDir) {
     $dllDest = $retroDir.FullName
-    # vcpkg's libz DLL.
+    $copied = @()
+    # vcpkg-installed runtime DLLs.
     $vcpkgBin = Join-Path $VcpkgRoot "installed\x64-mingw-dynamic\bin"
     if (Test-Path $vcpkgBin) {
         Get-ChildItem -Path $vcpkgBin -Filter "*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
             Copy-Item -Force $_.FullName $dllDest
+            $copied += $_.Name
         }
+    } else {
+        Warn "vcpkg bin dir $vcpkgBin not found."
     }
     # MinGW runtime DLLs from wherever choco's gcc lives.
     if ($env:CC) {
         $mingwBin = Split-Path $env:CC -Parent
-        foreach ($dll in @("libgcc_s_seh-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll")) {
+        foreach ($dll in @("libgcc_s_seh-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll", "libssp-0.dll", "libatomic-1.dll")) {
             $src = Join-Path $mingwBin $dll
-            if (Test-Path $src) { Copy-Item -Force $src $dllDest }
+            if (Test-Path $src) {
+                Copy-Item -Force $src $dllDest
+                $copied += $dll
+            }
         }
     }
-    Log "Copied runtime DLLs into $dllDest"
+    Log "Copied $($copied.Count) DLLs into $dllDest : $($copied -join ', ')"
+
+    # Diagnostic: list _retro.pyd's actual declared DLL deps via objdump.
+    $retroPyd = Get-ChildItem -Path $dllDest -Filter "_retro*.pyd" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($retroPyd -and (Get-Command objdump -ErrorAction SilentlyContinue)) {
+        Log "=== _retro.pyd DLL dependencies (objdump -p) ==="
+        $deps = & objdump -p $retroPyd.FullName 2>$null | Select-String 'DLL Name:'
+        foreach ($line in $deps) { Write-Host "    $line" }
+    }
 } else {
     Warn "stable_retro package dir not found under venv; skipping DLL copy."
 }
