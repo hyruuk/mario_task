@@ -460,6 +460,20 @@ try {
     $stableRetroExtra = "-G `"MinGW Makefiles`" -DCMAKE_TOOLCHAIN_FILE=$ToolchainFile -DVCPKG_TARGET_TRIPLET=x64-mingw-dynamic"
     if ($env:CC)  { $stableRetroExtra += " -DCMAKE_C_COMPILER=$($env:CC   -replace '\\', '/')" }
     if ($env:CXX) { $stableRetroExtra += " -DCMAKE_CXX_COMPILER=$($env:CXX -replace '\\', '/')" }
+    # stable-retro's setup.py passes -DPython_LIBRARY=<platlib-dir> which
+    # is the site-packages directory, not a libpython file -- so cmake
+    # ends up putting an empty value into PYBIND_LIBS and the final link
+    # fails with "undefined reference to __imp__Py_NoneStruct" etc.
+    # Override with the real python<ver>.lib at the Python install root.
+    $pyVer = & python -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')"
+    $pyPrefix = & python -c "import sys; print(sys.base_prefix)"
+    $pyLib = Join-Path $pyPrefix "libs\python$pyVer.lib"
+    if (Test-Path $pyLib) {
+        $stableRetroExtra += " -DPython_LIBRARY=$($pyLib -replace '\\', '/')"
+        Log "Pinning Python_LIBRARY to $pyLib"
+    } else {
+        Warn "Could not find $pyLib; stable-retro link may fail."
+    }
     $env:STABLE_RETRO_CMAKE_ARGS = $stableRetroExtra
     uv sync --extra dev
     if ($LASTEXITCODE -ne 0) {
