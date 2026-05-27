@@ -1,6 +1,6 @@
 [project]
 name = "mario_task"
-version = "0.2.27"
+version = "0.2.28"
 description = "NES Super Mario Bros experiment runner with EEG/iEEG markers and BIDS output."
 readme = "README.md"
 requires-python = ">=3.10,<3.13"

@@ -472,8 +472,17 @@ try {
     # ends up putting an empty value into PYBIND_LIBS and the final link
     # fails with "undefined reference to __imp__Py_NoneStruct" etc.
     # Override with the real python<ver>.lib at the Python install root.
-    $pyVer = & python -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')"
-    $pyPrefix = & python -c "import sys; print(sys.base_prefix)"
+    #
+    # CRITICAL: query the VENV's Python (not the system one). uv may
+    # pick a different Python version for the venv than what's first
+    # on PATH (it prefers older versions that satisfy requires-python).
+    # v0.2.27 hit this: system python was 3.12 so we pinned
+    # python312.lib, but uv built stable-retro under Python 3.10 in
+    # the venv -- _retro.pyd then needed python312.dll at runtime
+    # which doesn't exist in the 3.10 install.
+    $VenvPythonForQuery = Join-Path $VenvDir "Scripts\python.exe"
+    $pyVer = & $VenvPythonForQuery -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')"
+    $pyPrefix = & $VenvPythonForQuery -c "import sys; print(sys.base_prefix)"
     $pyLib = Join-Path $pyPrefix "libs\python$pyVer.lib"
     if (Test-Path $pyLib) {
         $stableRetroExtra += " -DPython_LIBRARY=$($pyLib -replace '\\', '/')"
