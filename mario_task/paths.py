@@ -255,8 +255,7 @@ def check_data_root(data_root: str | Path) -> str | None:
     if not root.is_dir():
         return (
             f"Mario data directory not found: {root!s}\n"
-            f"Run `bash setup_env.sh` (Linux) or `.\\setup_env.ps1` (Windows) "
-            f"to fetch it via datalad."
+            f"Run `bash setup_env.sh` to fetch it via datalad."
         )
 
     missing: list[str] = []

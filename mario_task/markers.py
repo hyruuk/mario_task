@@ -37,8 +37,7 @@ went away; the operator sees the warning at the start of the session.
 from __future__ import annotations
 
 import logging
-import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
@@ -232,8 +231,8 @@ class _SerialBackend:
 
 
 class _ParallelBackend:
-    """One byte per marker over a parallel port. Linux-only (no pyparallel
-    Windows support). Timestamps ignored — amplifier stamps on byte arrival."""
+    """One byte per marker over a parallel port. Timestamps ignored —
+    amplifier stamps on byte arrival."""
 
     def __init__(self, port_address: str) -> None:
         import parallel  # pyparallel
@@ -298,7 +297,7 @@ def configure(
                  module import time).
 
     On init failure (LSL daemon unreachable, serial port missing,
-    pyparallel not installed on Windows, etc.) the function falls back to
+    pyparallel not installed, etc.) the function falls back to
     :class:`_NullBackend`, logs a warning, and returns. Caller code can
     keep running.
     """
@@ -314,10 +313,6 @@ def configure(
                 raise ValueError("`port` is required for the serial backend.")
             _backend = _SerialBackend(port)
         elif backend == "parallel":
-            if sys.platform.startswith("win"):
-                raise RuntimeError(
-                    "parallel-port markers are not supported on Windows."
-                )
             if not port:
                 raise ValueError("`port` is required for the parallel backend.")
             _backend = _ParallelBackend(port)

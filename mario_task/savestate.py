@@ -9,9 +9,8 @@ progressed within a phase. Two are used:
         {"index": 0}                # next row in the design TSV to play in practice
 
 Writes are atomic: we write to ``<path>.tmp``, ``fsync`` it, then
-``os.replace`` to the final name. ``os.replace`` is atomic on POSIX (and on
-Windows since the rename happens within a single NTFS metadata transaction),
-so a Ctrl+C between bytes can never leave a half-written file behind.
+``os.replace`` to the final name. ``os.replace`` is atomic on POSIX, so a
+Ctrl+C between bytes can never leave a half-written file behind.
 
 The module is stdlib-only on purpose: it's part of the pure-Python core and
 must be importable without psychopy or stable-retro installed.
@@ -70,5 +69,5 @@ def save(path: str | os.PathLike[str], data: dict[str, Any]) -> None:
         f.write("\n")
         f.flush()
         os.fsync(f.fileno())
-    # os.replace is atomic on POSIX and (since Vista) on Windows.
+    # os.replace is atomic on POSIX.
     os.replace(tmp, p)

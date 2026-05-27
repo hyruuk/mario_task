@@ -22,43 +22,6 @@ bash setup_env.sh        # installs system deps, venv, fetches ROM via datalad
 bash run.sh sub01 01     # first run launches the config wizard
 ```
 
-## Quick install (Windows)
-
-For operators on a Windows 10 / 11 deploy box. **Internet required** for the first run (~1.5 GB of downloads: Python, Git, git-annex, Python deps, the Mario ROM).
-
-1. Download the latest **mario_task-windows-vX.Y.Z.zip** from the [Releases page](../../releases/latest).
-2. Move the ZIP somewhere stable (e.g. `Documents` or `My PC → This PC → C:`). Avoid `Downloads` — Windows may auto-clean it.
-3. Right-click the ZIP → **Extract All**.
-4. Open the extracted folder and **double-click `install.bat`**.
-   - If Windows SmartScreen warns about an unknown publisher, click **More info** → **Run anyway**.
-   - If a UAC prompt appears, click **Yes**.
-5. Wait for **"Setup complete!"**. First run is **~30-45 minutes** and downloads **~5 GB** — most of it is MSVC Build Tools (one-time, needed to compile `stable-retro`, which doesn't ship a Windows wheel). Subsequent reinstalls are seconds because everything's cached.
-6. A new **"Run Mario Task"** shortcut appears on your desktop. Double-click it to launch.
-7. **First launch only** — fill in the configuration wizard (trigger backend, enabled levels, etc.) and click Save.
-8. **Every session** — the subject picker opens. Pick or type a subject label, click Start session.
-
-### Troubleshooting (Windows)
-
-| Symptom | Fix |
-| --- | --- |
-| SmartScreen blocks `install.bat` | Click "More info" then "Run anyway". The script is unsigned because we don't publish through the Microsoft Store. |
-| "winget is not available" | On Windows 10, install [App Installer from the Microsoft Store](https://www.microsoft.com/store/productId/9NBLGGH4NNS1), then re-run `install.bat`. On Windows 11 it's preinstalled — try rebooting. |
-| `setup_env.ps1` fails on git-annex install | Install [git-annex for Windows](https://git-annex.branchable.com/install/Windows/) manually, then re-run `install.bat`. |
-| ROM download hangs / fails | The conp-ria-storage-http mirror is occasionally slow. Re-run `install.bat` (it picks up where it left off). |
-| Antivirus blocks PowerShell | Add an exclusion for the extracted folder. Common with corporate Windows images. |
-| Black PsychoPy window / very low frame rate | Graphics driver issue. Update the GPU driver via Device Manager; if you're testing inside a VM, enable 3D acceleration in the VM settings. |
-
-### Updating to a new release
-
-Each release is a fresh ZIP. To upgrade an existing install without losing subject data:
-
-1. **Back up your data.** Copy `output\` and `config.json` from your install folder to a safe location (e.g. Desktop).
-2. Delete the old install folder.
-3. Download and extract the new ZIP; run `install.bat`.
-4. **Restore your data.** Copy `output\` and `config.json` back into the new install folder. Subjects resume from where they left off.
-
-`data\mario.stimuli\` doesn't need backing up — `install.bat` re-fetches the ROM via datalad on first run.
-
 ## How to run a session
 
 1. **First run only:** a config wizard opens to set the trigger backend (LSL / serial / parallel / none), port, and run duration. Saves to `config.json`.

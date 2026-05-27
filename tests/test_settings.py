@@ -286,12 +286,3 @@ def test_partial_config_falls_back_to_defaults_for_missing_keys(tmp_path: Path) 
     assert s.paths == PathSettings()
 
 
-# ---------------------------------------------------------------------------
-# Platform helpers
-# ---------------------------------------------------------------------------
-
-
-def test_supports_parallel_port_reflects_platform() -> None:
-    # Smoke check; the boolean depends on the test machine but the function
-    # must always return a bool.
-    assert isinstance(settings.supports_parallel_port(), bool)

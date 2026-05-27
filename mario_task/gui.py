@@ -29,18 +29,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from mario_task import savestate
-from mario_task.design import N_LEVELS_PER_RUN
-from mario_task.design import ALL_POSSIBLE_LEVELS, DEFAULT_ENABLED_LEVELS, WORLDS
+from mario_task.design import ALL_POSSIBLE_LEVELS, DEFAULT_ENABLED_LEVELS, N_LEVELS_PER_RUN, WORLDS
 from mario_task.settings import (
+    _VALID_BACKENDS,
     DisplaySettings,
     PathSettings,
     Settings,
     TaskSettings,
     TriggerSettings,
-    _VALID_BACKENDS,
     default_settings,
     save,
-    supports_parallel_port,
 )
 
 if TYPE_CHECKING:
@@ -146,7 +144,6 @@ def run_config_wizard(config_path: str | Path) -> Settings | None:
     from psychopy import gui
 
     defaults = default_settings()
-    backend_choices = [b for b in _VALID_BACKENDS if b != "parallel" or supports_parallel_port()]
 
     dlg = gui.Dlg(title="mario_task — first-run configuration", labelButtonOK="Save")
     # NB: psychopy.gui.Dlg.show() returns a dict keyed by the FIRST arg of
@@ -154,11 +151,11 @@ def run_config_wizard(config_path: str | Path) -> Settings | None:
     # pass nice human labels via `label=`.
     dlg.addText("EEG / iEEG trigger backend")
     dlg.addField("backend", label="Backend",
-                 choices=backend_choices, initial=defaults.triggers.backend,
+                 choices=list(_VALID_BACKENDS), initial=defaults.triggers.backend,
                  tip="lsl = recommended for iEEG. null = no markers, dev mode.")
     dlg.addField("port", label="Port (serial/parallel only)",
                  initial=defaults.triggers.port or "",
-                 tip="Linux: /dev/ttyACM0 or /dev/parport1.  Windows: COM3 etc. "
+                 tip="e.g. /dev/ttyACM0 or /dev/parport1. "
                      "Ignored when backend is lsl or null.")
     dlg.addField("lsl_stream_name", label="LSL stream name",
                  initial=defaults.triggers.lsl_stream_name,
@@ -342,6 +339,7 @@ def pick_subject(output_root: str | Path) -> tuple[str, str] | None:
     subjects)".
     """
     from psychopy import gui
+
     from mario_task.paths import normalize_subject
 
     existing = list_existing_subjects(output_root)

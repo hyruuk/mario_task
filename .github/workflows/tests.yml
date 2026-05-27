@@ -2,12 +2,10 @@ name: Tests
 
 # Pure-Python test suite. No display, no psychopy / retro init — these
 # tests cover the pure logic modules (design, savestate, paths, phases,
-# markers, settings, etc.) and run on every push / PR on both Linux and
-# Windows to catch path / encoding / platform regressions early.
+# markers, settings, etc.) and run on every push / PR.
 #
 # The display-bound bits (engine, task, session, audio, gui rendering)
-# are NOT covered here — they're verified manually in a VM or on real
-# hardware once per release.
+# are NOT covered here — they're verified manually on real hardware.
 
 on:
   push:
@@ -17,10 +15,6 @@ on:
 
 jobs:
   pytest:
-    # Linux only — Windows pytest coverage comes from install-test.yml,
-    # which exercises the same suite at the end of the full operator
-    # install flow (after a real `uv sync` with the runner's MSVC
-    # toolchain available for stable-retro's C extension build).
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -38,14 +32,3 @@ jobs:
         # `-k "not integration"` excludes the display-bound smoke test
         # (none defined yet but the marker is reserved).
         run: uv run pytest tests/ -k "not integration" -v
-
-  lint-powershell:
-    runs-on: ubuntu-latest
-    # PowerShell ships built-in on the ubuntu-latest runner image, so no
-    # extra setup needed. We run the same lint script developers use
-    # locally — catches non-ASCII chars + syntax errors before they
-    # reach a Windows machine.
-    steps:
-      - uses: actions/checkout@v4
-      - name: Lint all .ps1 files
-        run: bash scripts/lint-powershell.sh

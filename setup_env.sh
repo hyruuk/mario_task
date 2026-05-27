@@ -153,61 +153,6 @@ log "uv $(uv --version)"
 # ---------------------------------------------------------------------------
 # 3. Virtual environment + project install
 # ---------------------------------------------------------------------------
-# Vendor + patch stable-retro into .cache/stable-retro. pyproject.toml's
-# [tool.uv.sources] points stable-retro at this path. The patch only
-# changes behavior on Windows (skips the fbneo + parallel_n64 cores
-# where upstream's Windows build is broken) -- on Linux it's a no-op,
-# but we still need the local checkout so uv lock / uv sync find it.
-STABLE_RETRO_DIR="${ROOT_DIR}/.cache/stable-retro"
-STABLE_RETRO_REV="24180f5dcc4ec3ba725f9614823c22ef5c6983ff"
-STABLE_RETRO_REPO="https://github.com/Farama-Foundation/stable-retro"
-if [[ ! -d "${STABLE_RETRO_DIR}/.git" ]]; then
-  log "Cloning stable-retro into ${STABLE_RETRO_DIR} (~600 MB with submodules)"
-  mkdir -p "$(dirname "${STABLE_RETRO_DIR}")"
-  rm -rf "${STABLE_RETRO_DIR}"
-  git clone "${STABLE_RETRO_REPO}" "${STABLE_RETRO_DIR}"
-fi
-( cd "${STABLE_RETRO_DIR}"
-  git fetch --depth 1 origin "${STABLE_RETRO_REV}" 2>/dev/null || true
-  git checkout "${STABLE_RETRO_REV}"
-  git submodule update --init --recursive --depth 1 )
-
-# Patch every stable-retro src/*.h that uses fixed-width int types
-# without including <cstdint>. On Linux transitive headers pull <cstdint>
-# in; on Windows/MinGW they don't. Idempotent via the marker.
-for rel in src/data.h src/memory.h src/movie-bk2.h src/movie.h src/search.h src/utils.h; do
-  header="${STABLE_RETRO_DIR}/${rel}"
-  [[ -f "${header}" ]] || continue
-  if ! grep -q "mario_task-patch: cstdint" "${header}"; then
-    log "Patching stable-retro/${rel} to include <cstdint>"
-    python3 - "${header}" <<'PYEOF'
-import pathlib, sys
-p = pathlib.Path(sys.argv[1])
-text = p.read_text()
-old = "#pragma once"
-new = "#pragma once\n#include <cstdint> // mario_task-patch: cstdint -- fixed-width int types used below"
-p.write_text(text.replace(old, new, 1))
-PYEOF
-  fi
-done
-
-# Apply the fbneo skip patch. Idempotent via the marker.
-CMAKE_FILE="${STABLE_RETRO_DIR}/CMakeLists.txt"
-if ! grep -q "mario_task-patch: skip fbneo" "${CMAKE_FILE}"; then
-  log "Patching stable-retro/CMakeLists.txt to skip fbneo + parallel_n64 on Windows"
-  # Widen the macOS skip-branch to also catch WIN32.
-  python3 - <<PYEOF
-import pathlib, re, sys
-p = pathlib.Path(r"${CMAKE_FILE}")
-text = p.read_text()
-old = 'if(APPLE)\n  message(\n    WARNING\n      "FBNeo arcade and parallel N64 emulator is currently not supported on macOS"\n  )\nelse()\n  add_core(fbneo fbneo)'
-new = 'if(APPLE OR WIN32) # mario_task-patch: skip fbneo + parallel_n64 on Windows\n  message(\n    WARNING\n      "FBNeo arcade and parallel N64 emulator is not supported on this platform (mario_task-patch)"\n  )\nelse()\n  add_core(fbneo fbneo)'
-if old not in text:
-    sys.exit("could not locate the fbneo skip-patch target; upstream layout may have changed")
-p.write_text(text.replace(old, new))
-PYEOF
-fi
-
 if [[ ! -d "${VENV_DIR}" ]]; then
   log "Creating virtualenv at ${VENV_DIR} (python ${PYTHON_VERSION})"
   uv venv --python "${PYTHON_VERSION}" "${VENV_DIR}"

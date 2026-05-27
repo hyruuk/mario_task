@@ -15,8 +15,8 @@ no psychopy, no retro. Safe to import from tests.
 
 Backend choice for triggers:
     ``lsl``      — Lab Streaming Layer (default, recommended for iEEG).
-    ``serial``   — TTL byte over a serial port (e.g. ``/dev/ttyACM0``, ``COM3``).
-    ``parallel`` — Parallel-port bit pattern (Linux only).
+    ``serial``   — TTL byte over a serial port (e.g. ``/dev/ttyACM0``).
+    ``parallel`` — Parallel-port bit pattern.
     ``null``     — No marker stream; useful for offline / dev.
 """
 
@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any, Literal, Mapping
@@ -471,12 +470,3 @@ def load(
         s = _apply_cli(s, cli_overrides)
     _validate(s)
     return s
-
-
-def supports_parallel_port() -> bool:
-    """Whether this platform supports the ``parallel`` trigger backend.
-
-    Currently Linux only — ``pyparallel`` does not have a working Windows
-    backend. The first-run wizard should hide the option when False.
-    """
-    return sys.platform.startswith("linux")

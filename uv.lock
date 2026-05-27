@@ -1093,15 +1093,15 @@ dependencies = [
     { name = "pillow" },
     { name = "psychopy" },
     { name = "pylsl" },
-    { name = "pyparallel", marker = "sys_platform == 'linux'" },
+    { name = "pyparallel" },
     { name = "pyserial" },
     { name = "python-dotenv" },
     { name = "sounddevice" },
     { name = "soundfile" },
     { name = "stable-retro" },
     { name = "tqdm" },
-    { name = "wxpython", version = "4.2.2", source = { url = "https://extras.wxpython.org/wxPython4/extras/linux/gtk3/ubuntu-24.04/wxPython-4.2.2-cp310-cp310-linux_x86_64.whl" }, marker = "python_full_version < '3.11' and sys_platform == 'linux'" },
-    { name = "wxpython", version = "4.2.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or sys_platform != 'linux'" },
+    { name = "wxpython", version = "4.2.2", source = { url = "https://extras.wxpython.org/wxPython4/extras/linux/gtk3/ubuntu-24.04/wxPython-4.2.2-cp310-cp310-linux_x86_64.whl" }, marker = "python_full_version < '3.11'" },
+    { name = "wxpython", version = "4.2.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
 
 [package.optional-dependencies]
@@ -1119,7 +1119,7 @@ requires-dist = [
     { name = "pillow" },
     { name = "psychopy" },
     { name = "pylsl" },
-    { name = "pyparallel", marker = "sys_platform == 'linux'" },
+    { name = "pyparallel" },
     { name = "pyserial" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7" },
     { name = "pytest-cov", marker = "extra == 'dev'" },
@@ -1127,10 +1127,10 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "sounddevice" },
     { name = "soundfile" },
-    { name = "stable-retro", directory = ".cache/stable-retro" },
+    { name = "stable-retro" },
     { name = "tqdm" },
-    { name = "wxpython", marker = "python_full_version != '3.10.*' or sys_platform != 'linux'" },
-    { name = "wxpython", marker = "python_full_version == '3.10.*' and sys_platform == 'linux'", url = "https://extras.wxpython.org/wxPython4/extras/linux/gtk3/ubuntu-24.04/wxPython-4.2.2-cp310-cp310-linux_x86_64.whl" },
+    { name = "wxpython", marker = "python_full_version != '3.10.*'" },
+    { name = "wxpython", marker = "python_full_version == '3.10.*'", url = "https://extras.wxpython.org/wxPython4/extras/linux/gtk3/ubuntu-24.04/wxPython-4.2.2-cp310-cp310-linux_x86_64.whl" },
 ]
 provides-extras = ["dev"]
 
@@ -1726,8 +1726,8 @@ dependencies = [
     { name = "tables", version = "3.11.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "ujson" },
     { name = "websockets" },
-    { name = "wxpython", version = "4.2.2", source = { url = "https://extras.wxpython.org/wxPython4/extras/linux/gtk3/ubuntu-24.04/wxPython-4.2.2-cp310-cp310-linux_x86_64.whl" }, marker = "python_full_version < '3.11' and sys_platform == 'linux'" },
-    { name = "wxpython", version = "4.2.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or sys_platform != 'linux'" },
+    { name = "wxpython", version = "4.2.2", source = { url = "https://extras.wxpython.org/wxPython4/extras/linux/gtk3/ubuntu-24.04/wxPython-4.2.2-cp310-cp310-linux_x86_64.whl" }, marker = "python_full_version < '3.11'" },
+    { name = "wxpython", version = "4.2.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "xmlschema" },
     { name = "zeroconf", marker = "sys_platform == 'darwin'" },
     { name = "zope-event" },
@@ -5056,19 +5056,21 @@ wheels = [
 [[package]]
 name = "stable-retro"
 version = "1.0.0"
-source = { directory = ".cache/stable-retro" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "farama-notifications" },
     { name = "gymnasium" },
     { name = "pyglet", version = "1.4.11", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'win32'" },
     { name = "pyglet", version = "1.5.27", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'win32'" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "farama-notifications", specifier = ">=0.0.1" },
-    { name = "gymnasium", specifier = ">=0.27.1" },
-    { name = "pyglet", specifier = "==1.*,>=1.3.2" },
+sdist = { url = "https://files.pythonhosted.org/packages/1b/d2/3ddff38290d9e81dece23ceb1fe09fd07f062ac8e0b66e7da13551a20620/stable_retro-1.0.0.tar.gz", hash = "sha256:96b14eecbf0fd1cd56205c6b83f008a5051c62645725c2a8dc6dd90da8f21925", size = 152913300, upload-time = "2026-04-07T15:45:46.303Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7a/3f/f1bb7caaa30f92837bad46c38cf211cbb62d308fa51bffa0d1f227e20e3a/stable_retro-1.0.0-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:85c2c04127771faaf2491bc6d8b1a36f5bcbcb14b7d8002d393c4ae6fb946948", size = 88120003, upload-time = "2026-04-07T15:44:33.712Z" },
+    { url = "https://files.pythonhosted.org/packages/64/9b/6e6bc47b48b947fa79c060f7e2383a2cc32f993b0adec3ed9f0ceaaba9af/stable_retro-1.0.0-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:aee4880bbc8c27994e56bee10702147793aa250e69ea48470afaf976b3bb0324", size = 123081261, upload-time = "2026-04-07T15:44:38.449Z" },
+    { url = "https://files.pythonhosted.org/packages/a1/f2/6a77bb00f17ba2130fa7f34c4bc0b6aca94234694e8197cc7b94805c1b76/stable_retro-1.0.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:3c12aa17bcbc1d64b0b9d69530c10ceb1060c0ee3e3ae89cf841472dd9dd366e", size = 88121623, upload-time = "2026-04-07T15:44:43.12Z" },
+    { url = "https://files.pythonhosted.org/packages/00/5a/992f181febbbaf97b5683f315eb677d5e6d452819c07fffb639d2bcc0d2f/stable_retro-1.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:d1e99663df28e9c7de267347a978f89072fb214d25202b63f553ba820ff6848d", size = 123104289, upload-time = "2026-04-07T15:44:57.159Z" },
+    { url = "https://files.pythonhosted.org/packages/f6/fd/fe7b3a729293fa164f57120f098f292096cf3cde2e494279662fb06e3ca0/stable_retro-1.0.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:1b2209252af5f605b65a5bbedacfb58766427a9736fa43bd819c2e15d30c267a", size = 88125810, upload-time = "2026-04-07T15:45:06.491Z" },
+    { url = "https://files.pythonhosted.org/packages/56/a3/ed819aad0a23c669ce372378e4d5d28fef3d5996de6c3c29db5f776c87d0/stable_retro-1.0.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:78491631aa09a59396927323888367083fb54c878fa2b1023b2eb3eb30951b1b", size = 123081456, upload-time = "2026-04-07T15:45:13.985Z" },
 ]
 
 [[package]]
@@ -5336,12 +5338,15 @@ name = "wxpython"
 version = "4.2.2"
 source = { url = "https://extras.wxpython.org/wxPython4/extras/linux/gtk3/ubuntu-24.04/wxPython-4.2.2-cp310-cp310-linux_x86_64.whl" }
 resolution-markers = [
+    "python_full_version < '3.11' and sys_platform == 'win32'",
+    "python_full_version < '3.11' and sys_platform == 'darwin'",
     "python_full_version < '3.11' and platform_machine == 'aarch64' and sys_platform == 'linux'",
     "python_full_version < '3.11' and platform_machine != 'aarch64' and sys_platform == 'linux'",
+    "python_full_version < '3.11' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "numpy", marker = "python_full_version < '3.11' and sys_platform == 'linux'" },
-    { name = "six", marker = "python_full_version < '3.11' and sys_platform == 'linux'" },
+    { name = "numpy", marker = "python_full_version < '3.11'" },
+    { name = "six", marker = "python_full_version < '3.11'" },
 ]
 wheels = [
     { url = "https://extras.wxpython.org/wxPython4/extras/linux/gtk3/ubuntu-24.04/wxPython-4.2.2-cp310-cp310-linux_x86_64.whl", hash = "sha256:5f673ad0e86fad29aecd3e970dfe66d3e955abd0f546435d85608b2f06001de1" },
@@ -5369,13 +5374,9 @@ resolution-markers = [
     "python_full_version == '3.11.*' and sys_platform == 'darwin'",
     "python_full_version == '3.11.*' and platform_machine == 'aarch64' and sys_platform == 'linux'",
     "(python_full_version == '3.11.*' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version == '3.11.*' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32')",
-    "python_full_version < '3.11' and sys_platform == 'win32'",
-    "python_full_version < '3.11' and sys_platform == 'darwin'",
-    "python_full_version < '3.11' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "numpy", marker = "(python_full_version < '3.12' and sys_platform != 'linux') or (python_full_version == '3.11.*' and sys_platform == 'linux')" },
-    { name = "typing-extensions", marker = "python_full_version < '3.11' and sys_platform != 'linux'" },
+    { name = "numpy", marker = "python_full_version == '3.11.*'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/22/43/81657a6b126ffc19163500a8184d683cec08eb4e1d06905cd0c371c702d0/wxpython-4.2.5.tar.gz", hash = "sha256:44e836d1bccd99c38790bb034b6ecf70d9060f6734320560f7c4b0d006144793", size = 58732217, upload-time = "2026-02-08T20:40:42.086Z" }
 wheels = [
