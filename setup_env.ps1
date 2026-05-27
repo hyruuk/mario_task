@@ -289,6 +289,14 @@ try {
     }
     Log "Installing mario_task and pinned deps from uv.lock (--extra dev)"
     Log "  (first run takes ~3 min; stable-retro builds from source on Windows)"
+    # stable-retro's setup.py hardcodes `cmake -G "Unix Makefiles"` but
+    # appends our extra args after, and cmake honors the LAST -G in the
+    # arg list. Overriding to "MinGW Makefiles" makes cmake configure
+    # its toolchain against the MinGW gcc we just installed, which
+    # finds libz inside MinGW's sysroot (FindZLIB.cmake fails under the
+    # default Unix Makefiles generator on Windows because there's no
+    # system zlib for it to locate).
+    $env:STABLE_RETRO_CMAKE_ARGS = '-G "MinGW Makefiles"'
     uv sync --extra dev
     if ($LASTEXITCODE -ne 0) {
         Die @"
