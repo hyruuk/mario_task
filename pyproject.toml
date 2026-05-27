@@ -1,6 +1,6 @@
 [project]
 name = "mario_task"
-version = "0.2.10"
+version = "0.2.11"
 description = "NES Super Mario Bros experiment runner with EEG/iEEG markers and BIDS output."
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
@@ -43,6 +43,12 @@ dependencies = [
 wxpython = [
     { url = "https://extras.wxpython.org/wxPython4/extras/linux/gtk3/ubuntu-24.04/wxPython-4.2.2-cp310-cp310-linux_x86_64.whl", marker = "sys_platform == 'linux' and python_version == '3.10'" },
 ]
+# stable-retro: pin to master past 1.0.0 because the 1.0.0 sdist on PyPI
+# omits the top-level `tests/` directory while its CMakeLists.txt has
+# add_subdirectory(tests) -- a packaging bug. Master has the BUILD_TESTS
+# gate that makes this conditional. We pin to a specific commit so the
+# install stays reproducible.
+stable-retro = { git = "https://github.com/Farama-Foundation/stable-retro", rev = "24180f5dcc4ec3ba725f9614823c22ef5c6983ff" }
 
 [project.optional-dependencies]
 dev = [
