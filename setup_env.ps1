@@ -617,7 +617,12 @@ if ($retroDir) {
 # ---------------------------------------------------------------------------
 Log "Smoke testing imports..."
 $smokeCode = @'
-import importlib, sys, os, traceback
+import importlib, sys, os, traceback, glob
+print(f"  diag sys.prefix      = {sys.prefix}")
+print(f"  diag sys.base_prefix = {sys.base_prefix}")
+for p in (sys.prefix, sys.base_prefix):
+    dlls = glob.glob(os.path.join(p, "python*.dll"))
+    print(f"  diag python*.dll under {p}: {dlls}")
 # Help the Windows DLL loader find _retro.pyd's runtime deps. Python 3.8+
 # narrowed the .pyd dependency search; setup_env.ps1 already copies the
 # MinGW + zlib + python<ver>.dll alongside _retro.pyd, but in case the
@@ -626,11 +631,15 @@ import site
 for sp in site.getsitepackages():
     cand = os.path.join(sp, "stable_retro")
     if os.path.isdir(cand):
+        print(f"  diag adding DLL dir: {cand}")
         os.add_dll_directory(cand)
 # Sys-prefix bin dir holds python<ver>.dll (venv falls back to base).
 for prefix in (sys.prefix, sys.base_prefix):
     if os.path.isdir(prefix):
+        print(f"  diag adding DLL dir: {prefix}")
         os.add_dll_directory(prefix)
+# Also expose them via PATH for older loaders.
+os.environ["PATH"] = sys.base_prefix + os.pathsep + os.environ.get("PATH", "")
 mods = [
     "psychopy", "psychopy.visual", "wx", "retro",
     "pandas", "sounddevice", "serial", "pylsl",
