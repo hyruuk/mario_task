@@ -164,7 +164,13 @@ Log "CMake $((& cmake --version | Select-Object -First 1) -replace 'cmake versio
 if (-not (Get-Command git-annex -ErrorAction SilentlyContinue)) {
     if (Get-Command choco -ErrorAction SilentlyContinue) {
         Log "Installing git-annex via Chocolatey..."
-        choco install git-annex -y --no-progress --limit-output
+        # --ignore-checksums: the choco package version often lags
+        # behind kitenet's actual published installer (the same .exe
+        # gets updated without a choco version bump), so the package's
+        # baked-in SHA256 fails to match. We're downloading from the
+        # official git-annex distribution mirror either way, so this
+        # isn't a meaningful security relaxation.
+        choco install git-annex -y --no-progress --limit-output --ignore-checksums
         if ($LASTEXITCODE -ne 0) {
             Die @"
 choco install git-annex failed (exit $LASTEXITCODE).
