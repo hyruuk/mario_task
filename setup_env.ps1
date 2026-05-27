@@ -275,8 +275,10 @@ if (-not (Test-Path (Join-Path $VcpkgRoot "vcpkg.exe"))) {
 Log "vcpkg at $VcpkgRoot"
 
 # Idempotent: vcpkg install is a no-op if the package is already there.
-Log "Installing zlib (x64-mingw-dynamic) via vcpkg..."
-& (Join-Path $VcpkgRoot "vcpkg.exe") install "zlib:x64-mingw-dynamic" --clean-after-build
+# We use the STATIC triplet so the resulting libz.a embeds into
+# _retro.pyd and there's no zlib1.dll runtime dependency.
+Log "Installing zlib (x64-mingw-static) via vcpkg..."
+& (Join-Path $VcpkgRoot "vcpkg.exe") install "zlib:x64-mingw-static" --clean-after-build
 if ($LASTEXITCODE -ne 0) { Die "vcpkg install zlib failed (exit $LASTEXITCODE)." }
 
 # Forward slashes avoid quoting headaches when this gets shlex-split
@@ -457,9 +459,14 @@ try {
     # its toolchain against the MinGW gcc we installed above.
     # Pointing at the vcpkg toolchain file makes find_package(ZLIB)
     # locate the zlib we installed in stage 2f.
-    $stableRetroExtra = "-G `"MinGW Makefiles`" -DCMAKE_TOOLCHAIN_FILE=$ToolchainFile -DVCPKG_TARGET_TRIPLET=x64-mingw-dynamic"
+    $stableRetroExtra = "-G `"MinGW Makefiles`" -DCMAKE_TOOLCHAIN_FILE=$ToolchainFile -DVCPKG_TARGET_TRIPLET=x64-mingw-static"
     if ($env:CC)  { $stableRetroExtra += " -DCMAKE_C_COMPILER=$($env:CC   -replace '\\', '/')" }
     if ($env:CXX) { $stableRetroExtra += " -DCMAKE_CXX_COMPILER=$($env:CXX -replace '\\', '/')" }
+    # Static-link MinGW's libgcc / libstdc++ / libwinpthread so _retro.pyd
+    # doesn't need any of those DLLs on PATH at run time. v0.2.25 had
+    # them copied into the package dir and added via os.add_dll_directory
+    # but the loader still failed with "module could not be found".
+    $stableRetroExtra += ' -DCMAKE_SHARED_LINKER_FLAGS="-static-libgcc -static-libstdc++ -static -lwinpthread"'
     # stable-retro's setup.py passes -DPython_LIBRARY=<platlib-dir> which
     # is the site-packages directory, not a libpython file -- so cmake
     # ends up putting an empty value into PYBIND_LIBS and the final link
@@ -564,7 +571,8 @@ if ($retroDir) {
     $dllDest = $retroDir.FullName
     $copied = @()
     # vcpkg-installed runtime DLLs.
-    $vcpkgBin = Join-Path $VcpkgRoot "installed\x64-mingw-dynamic\bin"
+    # No DLLs expected here under the static triplet, but kept for parity.
+    $vcpkgBin = Join-Path $VcpkgRoot "installed\x64-mingw-static\bin"
     if (Test-Path $vcpkgBin) {
         Get-ChildItem -Path $vcpkgBin -Filter "*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
             Copy-Item -Force $_.FullName $dllDest
