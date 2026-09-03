@@ -169,7 +169,7 @@ def run_emulator(
 
     # Mark the gameplay segment in the EEG stream so analysts can find
     # the start of each "reset → done" episode in the bk2 movie.
-    if task.use_eeg and markers.EEG_MARKERS_ON_FLIP:
+    if task.use_eeg and markers.EEG_MARKERS_ON_FLIP and markers.emits("game_reset"):
         markers.send_signal(markers.GAME_RESET, timestamp=markers.now())
 
     # Log the bk2 "open" line so a downstream verifier can pair it with
@@ -210,6 +210,9 @@ def run_emulator(
         # so the sample is stamped with the engine's frame-advance time
         # rather than the (later) push time.
         #
+        # triggers.on_game_frame=false silences this stream entirely,
+        # leaving only the lifecycle markers.
+        #
         # Decimation: triggers.trigger_every=N emits one trigger per N
         # frames (f1, f1+N, f1+2N, ...). The cycling byte value
         # (codes.game_frame_mod) advances per *sent* trigger, not per
@@ -219,6 +222,7 @@ def run_emulator(
         if (
             task.use_eeg
             and markers.EEG_MARKERS_ON_FLIP
+            and markers.emits("game_frame")
             and (level_step - 1) % trigger_every == 0
         ):
             trigger_idx = (level_step - 1) // trigger_every

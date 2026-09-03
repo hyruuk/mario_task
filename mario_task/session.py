@@ -4,17 +4,31 @@ This module owns:
     * the PsychoPy window lifetime
     * the PsychoPy LogFile lifetime
     * the EEG marker backend lifetime
+    * the scanner-sync transport lifetime
     * the retro custom-path registration
     * the task lifecycle loop (setup → instructions → run → stop → save)
 
-Phase 1 runs a single :class:`mario_task.task.MarioTask` covering
-``state_names=["Level1-1"]`` for ``settings.task.max_duration_seconds``.
-Phase 2 will replace the explicit ``MarioTask(...)`` construction with
-``phases.iter_tasks(config)`` and add Ctrl+N restart handling.
+Exit codes:
+
+===  ======================================================
+0    session completed (or was ended cleanly by the operator)
+2    the ROM / state data is missing or unusable
+130  the operator quit with Ctrl+Q
+===  ======================================================
+
+Operator shortcuts, live during every phase — instructions, the scanner
+wait, gameplay, the questionnaire and the end-of-run prompt:
+
+======  ==========================================================
+Ctrl+C  abort this run, continue to the next
+Ctrl+Q  quit the session
+Ctrl+N  reserved for "restart this run"; currently not acted on
+======  ==========================================================
 """
 
 from __future__ import annotations
 
+import logging as stdlogging
 import os
 import sys
 from dataclasses import dataclass, field
@@ -26,10 +40,15 @@ import retro
 from psychopy import core, event, logging, visual
 
 from mario_task import design, log_setup, markers, phases
+from mario_task import sync as sync_mod
 from mario_task.paths import BidsPaths, check_data_root
 from mario_task.questionnaire import build_default_questions
 from mario_task.settings import Settings
-from mario_task.task import DEFAULT_KEY_SET, EndOfRunPrompt, MarioTask, _TaskBase
+from mario_task.task import EndOfRunPrompt, MarioTask, _TaskBase
+
+#: Stdlib logger for operator-facing diagnostics. Distinct from the ``logging``
+#: imported from psychopy above, which writes the session .log file.
+log = stdlogging.getLogger(__name__)
 
 
 # Quiet PsychoPy's verbose frame-drop logging during gameplay (we already
@@ -108,19 +127,80 @@ def _build_window(settings: Settings) -> visual.Window:
 # ---------------------------------------------------------------------------
 
 
-def _listen_shortcuts() -> str | None:
-    """Return a single-char shortcut keypress or ``None``.
+#: Set by the Ctrl+Q global key; consumed by :func:`_listen_shortcuts`.
+_quit_requested = False
 
-    Ctrl+C → ``"c"`` (abort current task)
-    Ctrl+Q → ``"q"`` (quit the session)
-    Ctrl+N → ``"n"`` (Phase 2: restart current task — ignored in Phase 1)
+
+def _request_quit() -> None:
+    """Remember a Ctrl+Q. Called by PsychoPy the instant the key is pressed.
+
+    It only raises a flag — quitting still goes through the normal shortcut
+    path, so the run's events file and bk2 are written and every backend is
+    closed in order. Calling ``core.quit()`` here would kill the process
+    mid-level and lose the run.
     """
-    if any(k[1] & event.MOD_CTRL for k in event._keyBuffer):
-        keys = event.getKeys(["n", "c", "q"], modifiers=True)
-        ctrl = any(k[1]["ctrl"] for k in keys)
-        names = [k[0] for k in keys]
-        if names and ctrl:
-            return names[0]
+    global _quit_requested
+    _quit_requested = True
+
+
+def _install_quit_key() -> None:
+    """Register Ctrl+Q with PsychoPy's global key handler.
+
+    :func:`_listen_shortcuts` only sees a keypress on a frame it is polled on;
+    a global key is dispatched by PsychoPy the moment the key arrives, so a
+    Ctrl+Q during a blocking stretch — emulator setup, a savestate load, the
+    gap between two attempts — is remembered rather than dropped.
+
+    It is not an OS-level hotkey: the experiment window still has to have
+    keyboard focus, because PsychoPy dispatches these from the same pyglet
+    handler as everything else. That handler is
+    :func:`mario_task.input._on_pyglet_key_press` during gameplay, which
+    forwards modified keys onward — which is what keeps Ctrl+Q alive mid-level.
+    """
+    global _quit_requested
+    _quit_requested = False
+    try:
+        event.globalKeys.add(key="q", modifiers=["ctrl"], func=_request_quit, name="quit")
+    except Exception:  # noqa: BLE001 - already registered, or no global keys
+        log.debug("Could not register the Ctrl+Q global key.", exc_info=True)
+
+
+def _remove_quit_key() -> None:
+    """Unregister Ctrl+Q. ``globalKeys`` outlives the session otherwise."""
+    try:
+        event.globalKeys.remove("q", modifiers=["ctrl"])
+    except Exception:  # noqa: BLE001 - never registered, or already gone
+        pass
+
+
+def _listen_shortcuts() -> str | None:
+    """Return ``"c"`` / ``"n"`` / ``"q"``, or ``None`` if nothing was pressed.
+
+    Every shortcut requires Ctrl, without exception: during gameplay the
+    subject's unmodified keystrokes are captured by :mod:`mario_task.input`,
+    and a bare key is far more likely to be a stray press than a decision.
+    Ctrl+Q is the one way out, and :func:`mario_task.input._on_pyglet_key_press`
+    forwards modified keys to PsychoPy precisely so it keeps working mid-level.
+
+    The modifier is checked **per key**. An earlier version computed "was any
+    ctrl held" across the whole batch and then returned the *first* key's name,
+    so a stray unmodified 'q' turned the operator's next Ctrl+C into a session
+    quit — and because that version only called ``getKeys`` when a ctrl key was
+    already buffered, the stray 'q' was never drained and sat there waiting.
+
+    Passing an explicit key list matters: PsychoPy only drops the keys it was
+    asked about and leaves the rest in the buffer, so polling for shortcuts
+    every frame cannot swallow the sync signal the scanner waiter is watching
+    for on those same frames.
+    """
+    global _quit_requested
+    if _quit_requested:
+        _quit_requested = False
+        return "q"
+
+    for name, mods in event.getKeys(["n", "c", "q"], modifiers=True):
+        if mods.get("ctrl"):
+            return name
     return None
 
 
@@ -141,10 +221,30 @@ def _run_task(
     exp_win: visual.Window,
     *,
     use_eeg: bool,
+    sync_obj: sync_mod.Sync | None = None,
 ) -> str | None:
     """Drive one task through its lifecycle. Returns the shortcut that ended it."""
     print(f"Next task: {task}")
-    shortcut = _run_task_loop(task.instructions(exp_win, None))
+
+    # Exactly one thing gates the start of a run, and it owns the screen:
+    #
+    #   wait - the scanner. The subject sees only "Waiting for the scanner";
+    #          a "press X when ready" prompt on top of it would be a second
+    #          gate on a run the trigger has already released.
+    #   send - us, once the subject is ready: prompt first, then start the
+    #          recording, so the scanner is not left running while they read.
+    #   none - the subject. The prompt is the whole of it (the desk case).
+    #
+    # Both screens read the keyboard through event.getKeys, which keeps
+    # working until input.install() replaces the pyglet handler inside
+    # task.run(). Skipping instructions() also skips its two buffer-clearing
+    # flips, which is harmless: run() opens with a clearing flip of its own.
+    if sync_obj is not None and sync_obj.waits:
+        shortcut = _run_task_loop(sync_obj.start(exp_win))
+    else:
+        shortcut = _run_task_loop(task.instructions(exp_win, None))
+        if sync_obj is not None and not shortcut:
+            shortcut = _run_task_loop(sync_obj.start(exp_win))
 
     logging.info("GO")
     if use_eeg and not shortcut:
@@ -199,6 +299,19 @@ def run_session(config: RunConfig) -> int:
         ),
         codes=config.settings.triggers.codes,
         trigger_every=config.settings.triggers.trigger_every,
+        events=config.settings.triggers.events(),
+    )
+
+    # 4b. Scanner sync. Like markers.configure, this never raises: a port
+    #     that is unset or will not open degrades to starting the run
+    #     without a sync signal (see mario_task.sync).
+    sync_obj = sync_mod.configure(
+        config.settings.sync,
+        stream=markers.StreamConfig(
+            name=config.settings.triggers.lsl_stream_name,
+            type=config.settings.triggers.lsl_stream_type,
+            source_id=config.settings.triggers.lsl_stream_source_id,
+        ),
     )
 
     # 5. Register the retro custom path so it can find SuperMarioBros-Nes.
@@ -207,8 +320,10 @@ def run_session(config: RunConfig) -> int:
     #    path here rather than relying on the caller's cwd.
     retro.data.Integrations.add_custom_path(str(data_root.parent.resolve()))
 
-    # 6. Open the PsychoPy window.
+    # 6. Open the PsychoPy window, and the quit key that has to outlive
+    #    every phase inside it.
     exp_win = _build_window(config.settings)
+    _install_quit_key()
 
     try:
         # 7. Generate the per-subject design TSV if missing. It lives at
@@ -230,6 +345,10 @@ def run_session(config: RunConfig) -> int:
             if config.settings.task.questionnaire_enabled
             else None
         )
+        # One positional key list for every task in the session, built from
+        # the operator's input.button_map. The questionnaire indexes into it
+        # too, so remapping the pad remaps its navigation with it.
+        key_set = config.settings.input.key_set()
         fixation_duration = float(config.settings.task.fixation_duration_seconds)
         max_duration = float(config.settings.task.max_duration_seconds)
         subject_q_tsv = config.paths.questionnaire_tsv if post_run_ratings else None
@@ -240,7 +359,7 @@ def run_session(config: RunConfig) -> int:
                 state_names=[level_name],
                 max_duration=max_duration,
                 repeat_scenario=True,
-                key_set=DEFAULT_KEY_SET,
+                key_set=key_set,
                 post_run_ratings=post_run_ratings,
                 questionnaire_subject_tsv=subject_q_tsv,
                 questionnaire_subject_label=config.subject,
@@ -260,7 +379,7 @@ def run_session(config: RunConfig) -> int:
                 # levels) and let the task time-cap on its own — never
                 # loop back to state_names[0] within the same run.
                 repeat_scenario=False,
-                key_set=DEFAULT_KEY_SET,
+                key_set=key_set,
                 post_run_ratings=post_run_ratings,
                 questionnaire_subject_tsv=subject_q_tsv,
                 questionnaire_subject_label=config.subject,
@@ -310,7 +429,14 @@ def run_session(config: RunConfig) -> int:
                 use_eeg=use_eeg,
             )
             try:
-                shortcut = _run_task(task, exp_win, use_eeg=use_eeg)
+                # Only gameplay runs sync: the end-of-run prompt is the
+                # operator answering a question, not a run to align.
+                shortcut = _run_task(
+                    task,
+                    exp_win,
+                    use_eeg=use_eeg,
+                    sync_obj=sync_obj if isinstance(task, MarioTask) else None,
+                )
             finally:
                 task.unload()
 
@@ -322,8 +448,24 @@ def run_session(config: RunConfig) -> int:
                 # yield the end-of-run prompt next, so the operator gets
                 # to decide retry vs end.
                 print(f"Run {run_idx_counter[0]} aborted (Ctrl+C).")
+            if shortcut == "n" and isinstance(task, MarioTask):
+                # There is no restart here yet: tasks come from a generator,
+                # not a numbered loop, so "same run again" is not a `continue`.
+                # Say so rather than letting it look like a silent Ctrl+C —
+                # the end-of-run prompt is how you replay a level today.
+                print(
+                    f"Run {run_idx_counter[0]} ended (Ctrl+N). Restart is not "
+                    f"implemented; use the end-of-run prompt to play again."
+                )
         print(f"Session ended after {run_idx_counter[0]} run(s).")
         return 0
     finally:
-        exp_win.close()
+        # Tear down in reverse order, never masking an in-flight exception.
+        _remove_quit_key()
+        try:
+            exp_win.close()
+        except Exception:  # noqa: BLE001
+            pass
+        sync_obj.close()
+        markers.close()
         log_setup.flush()

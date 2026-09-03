@@ -18,6 +18,15 @@ Backend choice for triggers:
     ``serial``   — TTL byte over a serial port (e.g. ``/dev/ttyACM0``).
     ``parallel`` — Parallel-port bit pattern.
     ``null``     — No marker stream; useful for offline / dev.
+
+Two independent recording-hardware sections, matching
+``controller_validation_task``:
+
+    ``triggers`` — outgoing per-event markers (see :mod:`mario_task.markers`).
+    ``sync``     — how the run start is aligned with the recording device
+                   (see :mod:`mario_task.sync`).
+
+A run can wait for a scanner and also emit markers, or do neither.
 """
 
 from __future__ import annotations
@@ -33,13 +42,26 @@ from mario_task.design import (
     ALL_POSSIBLE_LEVELS,
     DEFAULT_ENABLED_LEVELS,
 )
-from mario_task.markers import TriggerCodes
+from mario_task.markers import TriggerCodes, TriggerEvents
 
 # Bumping this should force a migration path. Keep it boring.
 SCHEMA_VERSION = 1
 
 TriggerBackend = Literal["lsl", "serial", "parallel", "null"]
 _VALID_BACKENDS: tuple[TriggerBackend, ...] = ("lsl", "serial", "parallel", "null")
+
+SyncMode = Literal["send", "wait", "none"]
+SyncBackend = Literal["none", "serial", "parallel", "lsl", "key", "keyboard", "markers"]
+
+#: Sync backends that physically write to a port and therefore need one.
+_PORT_BACKENDS = ("serial", "parallel")
+
+#: Sync backends valid per mode. "none" is always allowed and means "no
+#: hardware": the keyboard when waiting, nothing at all when sending.
+_VALID_SYNC_BACKENDS: dict[str, tuple[str, ...]] = {
+    "send": ("none", "serial", "parallel", "lsl", "key", "markers"),
+    "wait": ("none", "keyboard", "serial"),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +71,16 @@ _VALID_BACKENDS: tuple[TriggerBackend, ...] = ("lsl", "serial", "parallel", "nul
 
 @dataclass(frozen=True)
 class TriggerSettings:
+    """Outgoing event markers for iEEG / EEG / MEG.
+
+    Independent of :class:`SyncSettings`: a run can wait for a scanner and
+    also emit markers, or do neither.
+
+    ``codes`` says what value each event sends; ``on_*`` says whether it is
+    sent at all. Task start / stop always fire — without them a recording
+    cannot be segmented — so they have no switch.
+    """
+
     backend: TriggerBackend = "lsl"
     port: str | None = None
     lsl_stream_name: str = "mario_task"
@@ -62,6 +94,88 @@ class TriggerSettings:
     # advances at 1/N of the bk2 rate. The .log line `trigger_sent
     # frame=...` records the emulator-frame index of every sent trigger.
     trigger_every: int = 1
+    # Per-event switches. on_game_frame is the expensive one (60 markers/s);
+    # turn it off and the stream keeps only the lifecycle markers, which is
+    # enough to segment a recording into runs and attempts.
+    on_game_frame: bool = True
+    on_game_reset: bool = True
+    on_non_game_flip: bool = True
+
+    def events(self) -> TriggerEvents:
+        """The ``on_*`` flags as the object :func:`markers.configure` takes."""
+        return TriggerEvents(
+            on_game_frame=self.on_game_frame,
+            on_game_reset=self.on_game_reset,
+            on_non_game_flip=self.on_non_game_flip,
+        )
+
+
+#: gym-retro's NES button order, from ``stable_retro/cores/fceumm.json``.
+#: **Position is the contract**: ``emulator.step()`` takes one boolean per
+#: entry in exactly this order, and :mod:`mario_task.questionnaire` indexes
+#: into it (4=UP, 5=DOWN, 6=LEFT, 7=RIGHT, 8=A) so the questionnaire is
+#: navigated with the same keys the game is played with. ``None`` marks a
+#: pad slot the console does not have.
+NES_BUTTONS: tuple[str | None, ...] = (
+    "B", None, "SELECT", "START", "UP", "DOWN", "LEFT", "RIGHT", "A",
+    None, None, None,
+)
+
+#: The buttons an operator can actually bind, in the order the wizard shows
+#: them: movement first, then the two action buttons, then the console keys.
+BINDABLE_BUTTONS: tuple[str, ...] = (
+    "UP", "DOWN", "LEFT", "RIGHT", "A", "B", "START", "SELECT",
+)
+
+#: Key names are what pyglet reports, lowercased — see
+#: :func:`mario_task.input._normalize_key`. Arrows are ``up``/``down``/
+#: ``left``/``right``; letters and digits are themselves.
+#:
+#: The default is the classic NES-on-a-keyboard layout, and the one the
+#: README documents: arrows to move, Z to run (B), X to jump (A). START and
+#: SELECT are deliberately unbound — a subject who can pause mid-level
+#: produces a recording nobody can segment.
+DEFAULT_BUTTON_MAP: dict[str, str] = {
+    "UP": "up",
+    "DOWN": "down",
+    "LEFT": "left",
+    "RIGHT": "right",
+    "A": "x",
+    "B": "z",
+    "START": "",
+    "SELECT": "",
+}
+
+#: What an unbound button looks like in a ``key_set``. No pyglet key ever
+#: normalises to this, so ``held_for`` reports it as never pressed.
+UNBOUND = "_"
+
+
+@dataclass(frozen=True)
+class InputSettings:
+    """Which keyboard key drives which NES button.
+
+    The task reads the pad as a keyboard, so this is the whole of the
+    controller configuration. Bind the keys your gamepad adapter actually
+    sends (an fMRI-compatible pad usually presents as a USB keyboard), or
+    leave the default to play at a desk.
+
+    A blank value leaves that button unbound, which is what START and SELECT
+    are by default.
+    """
+
+    button_map: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_BUTTON_MAP))
+
+    def key_set(self) -> list[str]:
+        """The positional key list ``emulator.step()`` and the task consume.
+
+        >>> InputSettings().key_set()[:9]
+        ['z', '_', '_', '_', 'up', 'down', 'left', 'right', 'x']
+        """
+        return [
+            (self.button_map.get(button) or UNBOUND) if button else UNBOUND
+            for button in NES_BUTTONS
+        ]
 
 
 @dataclass(frozen=True)
@@ -88,6 +202,53 @@ class TaskSettings:
 
 
 @dataclass(frozen=True)
+class SyncSettings:
+    """How the run start is aligned with the recording device.
+
+    ``mode`` says *what happens* at run start:
+      * ``"none"`` — start immediately. The default.
+      * ``"wait"`` — hold on a waiting screen until the sync signal arrives.
+      * ``"send"`` — emit ``signal`` once, to start the recording device.
+        This is the fMRI case where the stimulus computer starts the scanner.
+
+    ``backend`` says *over what*, and defaults to ``"none"`` — no hardware:
+      * in ``wait`` mode the signal is then expected from the **keyboard**
+        (most MR trigger boxes present as a USB keyboard emitting ``5`` or
+        ``t``, so this is also the usual scanner setup);
+      * in ``send`` mode there is nothing to send to, so the run starts
+        immediately with a warning.
+
+    Otherwise: ``serial`` / ``parallel`` write or read a byte on ``port``,
+    ``lsl`` and ``key`` send only, ``keyboard`` waits only, and ``markers``
+    (send only) re-uses the already-open outgoing marker backend so a single
+    serial port can carry both the start signal and the event markers without
+    being opened twice.
+
+    ``signal`` is the sync signal itself, and means the same thing in both
+    directions: in ``send`` mode it is what goes out (``"s"`` -> the byte 115),
+    in ``wait`` mode it is what we listen for. It may list alternatives, which
+    is what a keyboard trigger box usually needs — ``["5", "percent"]`` are the
+    same physical key with and without shift. Only the first entry is ever
+    sent.
+
+    Sync happens once per gameplay run, and decides which screen gates it:
+    ``wait`` shows only "Waiting for the scanner" (no "press X when ready"),
+    ``send`` prompts first and then starts the recording, ``none`` prompts
+    only.
+
+    A ``serial``/``parallel`` port that is unset or will not open degrades to
+    the ``"none"`` behaviour above rather than aborting the session.
+    """
+
+    mode: SyncMode = "none"
+    backend: SyncBackend = "none"
+    port: str | None = None
+    signal: tuple[str, ...] = ("s",)
+    n_dummy_scans: int = 0
+    timeout_seconds: float | None = None
+
+
+@dataclass(frozen=True)
 class DisplaySettings:
     fullscreen: bool = True
     screen_index: int | None = None  # None = auto
@@ -107,6 +268,8 @@ class Settings:
     or the ``with_*`` helpers to derive a modified copy."""
 
     triggers: TriggerSettings = field(default_factory=TriggerSettings)
+    sync: SyncSettings = field(default_factory=SyncSettings)
+    input: InputSettings = field(default_factory=InputSettings)
     task: TaskSettings = field(default_factory=TaskSettings)
     display: DisplaySettings = field(default_factory=DisplaySettings)
     paths: PathSettings = field(default_factory=PathSettings)
@@ -123,6 +286,7 @@ class Settings:
         d["task"]["enabled_levels"] = [
             [int(w), int(l)] for w, l in self.task.enabled_levels
         ]
+        d["sync"]["signal"] = list(self.sync.signal)
         return d
 
 
@@ -200,6 +364,80 @@ def _validate_codes(c: TriggerCodes) -> None:
         )
 
 
+def _validate_input(i: InputSettings) -> None:
+    """Raise ``ValueError`` if the button map could not drive the game.
+
+    Two mistakes are worth catching before a subject is in the scanner: a
+    button the game needs that nothing can press, and one key bound to two
+    buttons (which would press both at once, every time).
+    """
+    unknown = sorted(set(i.button_map) - set(BINDABLE_BUTTONS))
+    if unknown:
+        raise ValueError(
+            f"input.button_map names {unknown}, which the NES does not have. "
+            f"Valid buttons are {list(BINDABLE_BUTTONS)}."
+        )
+
+    # The four directions plus A and B are what playing Mario requires;
+    # START and SELECT are optional and unbound by default.
+    required = ("UP", "DOWN", "LEFT", "RIGHT", "A", "B")
+    missing = [b for b in required if not i.button_map.get(b, "").strip()]
+    if missing:
+        raise ValueError(
+            f"input.button_map leaves {missing} unbound, so the subject could "
+            f"not play. Bind a key for each, e.g. {{\"{missing[0]}\": \"x\"}}. "
+            f"Only START and SELECT may be left blank."
+        )
+
+    bound: dict[str, str] = {}
+    for button in BINDABLE_BUTTONS:
+        key = i.button_map.get(button, "").strip()
+        if not key:
+            continue
+        if key in bound:
+            raise ValueError(
+                f"input.button_map binds {key!r} to both {bound[key]} and "
+                f"{button}; one keypress would press both buttons at once. "
+                f"Give each button its own key."
+            )
+        bound[key] = button
+
+
+def _validate_sync(s: SyncSettings) -> None:
+    """Raise ``ValueError`` if the sync section cannot start a run.
+
+    Deliberately lenient about ports: a missing or dead one is handled at
+    run time by :func:`mario_task.sync.configure`, which warns and degrades
+    so the same ``config.json`` works at the scanner and on a desk. Only
+    genuinely unusable *combinations* are rejected here.
+    """
+    valid_modes = ("send", "wait", "none")
+    if s.mode not in valid_modes:
+        raise ValueError(f"sync.mode must be one of {valid_modes}, got {s.mode!r}.")
+
+    if s.mode != "none" and not s.signal:
+        raise ValueError(
+            "sync.signal is empty: there would be nothing to send, and nothing "
+            "a scanner TTL could match. Most MR trigger boxes emit '5' or 't'."
+        )
+
+    if s.mode in _VALID_SYNC_BACKENDS:
+        valid = _VALID_SYNC_BACKENDS[s.mode]
+        if s.backend not in valid:
+            raise ValueError(
+                f"sync.backend for mode {s.mode!r} must be one of {valid}, "
+                f"got {s.backend!r}."
+            )
+
+    if s.n_dummy_scans < 0:
+        raise ValueError(f"sync.n_dummy_scans must be >= 0, got {s.n_dummy_scans}.")
+    if s.timeout_seconds is not None and s.timeout_seconds <= 0:
+        raise ValueError(
+            f"sync.timeout_seconds must be > 0, got {s.timeout_seconds}. "
+            f"Set it to null to wait indefinitely."
+        )
+
+
 def _validate(s: Settings) -> None:
     if s.triggers.backend not in _VALID_BACKENDS:
         raise ValueError(
@@ -216,6 +454,8 @@ def _validate(s: Settings) -> None:
             f"triggers.trigger_every={s.triggers.trigger_every} must be ≥ 1 "
             f"(1 = a trigger every emulator frame, N = every Nth)."
         )
+    _validate_sync(s.sync)
+    _validate_input(s.input)
     if s.task.max_duration_seconds <= 0:
         raise ValueError(
             f"task.max_duration_seconds must be > 0, got {s.task.max_duration_seconds}"
@@ -286,6 +526,20 @@ def _filter_known(d: Mapping[str, Any], cls: type) -> dict[str, Any]:
     return out
 
 
+def _str_tuple(value: Any) -> tuple[str, ...]:
+    """Accept ``"s"`` as readily as ``["5", "percent"]``.
+
+    A single key is the common case, and quoting it as a bare string is what
+    anyone hand-editing config.json will do.
+
+    >>> _str_tuple("s")
+    ('s',)
+    >>> _str_tuple(["5", "percent"])
+    ('5', 'percent')
+    """
+    return (value,) if isinstance(value, str) else tuple(str(v) for v in value)
+
+
 def _from_dict(data: Mapping[str, Any]) -> Settings:
     """Build a Settings from a (possibly partial) dict; missing fields → defaults.
 
@@ -327,7 +581,25 @@ def _from_dict(data: Mapping[str, Any]) -> Settings:
     display = DisplaySettings(**display_kwargs)
 
     paths = PathSettings(**{**asdict(PathSettings()), **data.get("paths", {})})
-    return Settings(triggers=triggers, task=task, display=display, paths=paths)
+
+    # A partial button_map is merged onto the default, so a config that
+    # only rebinds A and B keeps working arrows.
+    input_in = _filter_known(dict(data.get("input", {})), InputSettings)
+    button_map = {**DEFAULT_BUTTON_MAP, **(input_in.get("button_map") or {})}
+    inputs = InputSettings(button_map={k: str(v) for k, v in button_map.items()})
+
+    sync_in = _filter_known(dict(data.get("sync", {})), SyncSettings)
+    # JSON has no tuple; and a lone signal is naturally written as a bare
+    # string ("s") by anyone hand-editing config.json.
+    if "signal" in sync_in:
+        sync_in["signal"] = _str_tuple(sync_in["signal"])
+    sync_defaults = {f.name: getattr(SyncSettings(), f.name) for f in fields(SyncSettings)}
+    sync = SyncSettings(**{**sync_defaults, **sync_in})
+
+    return Settings(
+        triggers=triggers, sync=sync, input=inputs, task=task,
+        display=display, paths=paths,
+    )
 
 
 def load_from_file(path: str | os.PathLike[str]) -> Settings:
@@ -360,9 +632,20 @@ _ENV_KEYS = {
     # triggers
     "MARIO_TRIGGER_BACKEND": ("triggers", "backend", str),
     "MARIO_TRIGGER_PORT": ("triggers", "port", str),
+    "MARIO_TRIGGER_EVERY": ("triggers", "trigger_every", int),
+    "MARIO_TRIGGER_ON_GAME_FRAME": ("triggers", "on_game_frame", "bool"),
+    "MARIO_TRIGGER_ON_GAME_RESET": ("triggers", "on_game_reset", "bool"),
+    "MARIO_TRIGGER_ON_NON_GAME_FLIP": ("triggers", "on_non_game_flip", "bool"),
     "LSL_STREAM_NAME": ("triggers", "lsl_stream_name", str),
     "LSL_STREAM_TYPE": ("triggers", "lsl_stream_type", str),
     "LSL_STREAM_SOURCE_ID": ("triggers", "lsl_stream_source_id", str),
+    # sync
+    "MARIO_SYNC_MODE": ("sync", "mode", str),
+    "MARIO_SYNC_BACKEND": ("sync", "backend", str),
+    "MARIO_SYNC_PORT": ("sync", "port", str),
+    "MARIO_SYNC_SIGNAL": ("sync", "signal", "keys"),
+    "MARIO_SYNC_DUMMY_SCANS": ("sync", "n_dummy_scans", int),
+    "MARIO_SYNC_TIMEOUT": ("sync", "timeout_seconds", "opt_float"),
     # task
     "MARIO_MAX_DURATION": ("task", "max_duration_seconds", int),
     "MARIO_DISCOVERY_ENABLED": ("task", "discovery_enabled", "bool"),
@@ -382,21 +665,48 @@ def _parse_bool(val: str) -> bool:
     return val.strip().lower() not in ("0", "false", "no", "off", "")
 
 
+def _parse_opt_float(val: str) -> float | None:
+    """Blank means "no timeout" (wait indefinitely), not zero."""
+    return None if val.strip() == "" else float(val)
+
+
+def _parse_keys(val: str) -> tuple[str, ...]:
+    """Comma-separated key names, for the one-line-per-setting env format.
+
+    >>> _parse_keys("s")
+    ('s',)
+    >>> _parse_keys("5, percent")
+    ('5', 'percent')
+    """
+    return tuple(part.strip() for part in val.split(",") if part.strip())
+
+
 def _apply_env(s: Settings, env: Mapping[str, str]) -> Settings:
     """Return a new Settings with env-var overrides applied."""
-    patches: dict[str, dict[str, Any]] = {"triggers": {}, "task": {}, "display": {}, "paths": {}}
+    patches: dict[str, dict[str, Any]] = {
+        "triggers": {}, "sync": {}, "task": {}, "display": {}, "paths": {},
+    }
     for env_key, (section, field_name, kind) in _ENV_KEYS.items():
         if env_key not in env:
             continue
         raw = env[env_key]
-        if kind is str:
-            value: Any = raw
-        elif kind is int:
-            value = int(raw)
-        elif kind == "bool":
-            value = _parse_bool(raw)
-        else:  # pragma: no cover - defensive
-            raise AssertionError(f"unknown env kind {kind!r}")
+        try:
+            if kind is str:
+                value: Any = raw
+            elif kind is int:
+                value = int(raw)
+            elif kind == "bool":
+                value = _parse_bool(raw)
+            elif kind == "opt_float":
+                value = _parse_opt_float(raw)
+            elif kind == "keys":
+                value = _parse_keys(raw)
+            else:  # pragma: no cover - defensive
+                raise AssertionError(f"unknown env kind {kind!r}")
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Cannot parse environment variable {env_key}={raw!r}: {exc}"
+            ) from exc
         patches[section][field_name] = value
 
     # Compose window size from W+H if both set.
@@ -405,51 +715,70 @@ def _apply_env(s: Settings, env: Mapping[str, str]) -> Settings:
 
     if not any(patches.values()):
         return s
-    new_triggers = replace(s.triggers, **patches["triggers"]) if patches["triggers"] else s.triggers
-    new_task = replace(s.task, **patches["task"]) if patches["task"] else s.task
-    new_display = replace(s.display, **patches["display"]) if patches["display"] else s.display
-    new_paths = replace(s.paths, **patches["paths"]) if patches["paths"] else s.paths
     return replace(
         s,
-        triggers=new_triggers,
-        task=new_task,
-        display=new_display,
-        paths=new_paths,
+        **{
+            name: replace(getattr(s, name), **patch)
+            for name, patch in patches.items()
+            if patch
+        },
     )
+
+
+#: CLI dest -> (section, field). Declarative so the argparse flags in
+#: :mod:`mario_task.cli` and the settings fields can be checked against each
+#: other by eye. Values of ``None`` mean "flag not given" and are ignored.
+_CLI_KEYS: dict[str, tuple[str, str]] = {
+    "output_root": ("paths", "output_root"),
+    "max_duration": ("task", "max_duration_seconds"),
+    "fullscreen": ("display", "fullscreen"),
+    "screen_index": ("display", "screen_index"),
+    "trigger_backend": ("triggers", "backend"),
+    "trigger_port": ("triggers", "port"),
+    "trigger_every": ("triggers", "trigger_every"),
+    "sync_mode": ("sync", "mode"),
+    "sync_backend": ("sync", "backend"),
+    "sync_port": ("sync", "port"),
+    "sync_signal": ("sync", "signal"),
+}
+
+#: Retired flag names kept working. ``--eeg-backend`` / ``--eeg-port`` predate
+#: the rename that lined this task's flags up with controller_validation_task;
+#: they still parse, and land on the same fields.
+_CLI_ALIASES: dict[str, str] = {
+    "eeg_backend": "trigger_backend",
+    "eeg_port": "trigger_port",
+}
 
 
 def _apply_cli(s: Settings, cli: Mapping[str, Any]) -> Settings:
     """Return a new Settings with CLI flag overrides applied.
 
-    Recognized keys (any subset; ``None`` values are ignored, treated as
-    "not provided"):
-
-        eeg_backend, eeg_port, max_duration, output_root, fullscreen, ctl_win
+    Recognized keys are the dests in :data:`_CLI_KEYS` (plus the aliases in
+    :data:`_CLI_ALIASES`). Any subset may be given; ``None`` values mean "flag
+    not provided" and leave the lower-precedence layers alone.
     """
-    triggers_patch: dict[str, Any] = {}
-    task_patch: dict[str, Any] = {}
-    display_patch: dict[str, Any] = {}
-    paths_patch: dict[str, Any] = {}
+    patches: dict[str, dict[str, Any]] = {}
+    for name, value in cli.items():
+        if value is None:
+            continue
+        name = _CLI_ALIASES.get(name, name)
+        if name not in _CLI_KEYS:
+            continue
+        section, field_name = _CLI_KEYS[name]
+        patches.setdefault(section, {})[field_name] = value
 
-    if (v := cli.get("eeg_backend")) is not None:
-        triggers_patch["backend"] = v
-    if (v := cli.get("eeg_port")) is not None:
-        triggers_patch["port"] = v
-    if (v := cli.get("max_duration")) is not None:
-        task_patch["max_duration_seconds"] = int(v)
-    if (v := cli.get("output_root")) is not None:
-        paths_patch["output_root"] = v
-    if (v := cli.get("fullscreen")) is not None:
-        display_patch["fullscreen"] = bool(v)
+    # max_duration arrives as a string from some callers; the field is an int.
+    if "task" in patches and "max_duration_seconds" in patches["task"]:
+        patches["task"]["max_duration_seconds"] = int(patches["task"]["max_duration_seconds"])
+    if "display" in patches and "fullscreen" in patches["display"]:
+        patches["display"]["fullscreen"] = bool(patches["display"]["fullscreen"])
 
-    if not (triggers_patch or task_patch or display_patch or paths_patch):
+    if not patches:
         return s
     return replace(
         s,
-        triggers=replace(s.triggers, **triggers_patch) if triggers_patch else s.triggers,
-        task=replace(s.task, **task_patch) if task_patch else s.task,
-        display=replace(s.display, **display_patch) if display_patch else s.display,
-        paths=replace(s.paths, **paths_patch) if paths_patch else s.paths,
+        **{name: replace(getattr(s, name), **patch) for name, patch in patches.items()},
     )
 
 

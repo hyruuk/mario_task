@@ -35,13 +35,18 @@ from psychopy import constants, event, logging, visual
 from mario_task import engine, markers, questionnaire
 from mario_task.audio import SoundDeviceGameBlockStream
 from mario_task.input import ControllerInput, install as install_input, uninstall as uninstall_input
+from mario_task.settings import InputSettings
 
 if TYPE_CHECKING:
     from psychopy.visual import Window
 
 
-# Default 12-button NES key mapping; matches upstream DEFAULT_KEY_SET.
-DEFAULT_KEY_SET: list[str] = ["z", "_", "_", "_", "up", "down", "left", "right", "x", "_", "_", "_"]
+#: Default 12-button NES key mapping: arrows to move, Z to run (B), X to
+#: jump (A). Derived from ``settings.DEFAULT_BUTTON_MAP`` rather than spelled
+#: out, so the operator's ``input.button_map`` and this fallback cannot drift
+#: apart. The session passes the configured set in; this is what a task built
+#: directly (tests, a REPL) gets.
+DEFAULT_KEY_SET: list[str] = InputSettings().key_set()
 
 
 # ---------------------------------------------------------------------------
@@ -148,11 +153,12 @@ class _TaskBase:
     def _eeg_marker_value(self, flip_idx: int) -> int | None:  # noqa: ARG002
         """Marker value pushed on each non-gameplay flip. ``None`` = skip.
 
-        Default: ``NON_GAME_FLIP`` (3). VideoGame-style tasks return
+        Default: ``NON_GAME_FLIP`` (3), or ``None`` when
+        ``triggers.on_non_game_flip`` is off. VideoGame-style tasks return
         ``None`` while gameplay is active (``flags & 4``) so we don't
         double-mark — the per-emulator-step marker handles it.
         """
-        return markers.NON_GAME_FLIP
+        return markers.NON_GAME_FLIP if markers.emits("non_game_flip") else None
 
     def _log_event(self, ev: dict, clock: str = "task") -> None:
         if clock == "task":

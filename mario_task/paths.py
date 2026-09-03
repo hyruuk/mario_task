@@ -74,6 +74,37 @@ def normalize_subject(raw: str) -> str:
     return raw[4:] if raw.startswith("sub-") else raw
 
 
+def normalize_session(raw: str) -> str:
+    """Strip a BIDS ``ses-`` prefix, and zero-pad a bare number to 3 digits.
+
+    >>> normalize_session("ses-001")
+    '001'
+    >>> normalize_session("1")
+    '001'
+    >>> normalize_session("pilot")
+    'pilot'
+    """
+    label = raw[4:] if raw.startswith("ses-") else raw
+    return f"{int(label):03d}" if label.isdigit() else label
+
+
+def list_subjects(output_root: str | Path) -> list[str]:
+    """Return the sorted subject labels that already have output on disk.
+
+    Sorted alphabetically, for a stable dropdown. :func:`mario_task.gui.
+    list_existing_subjects` returns the same set ordered by mtime instead,
+    which is what the picker wants — most recently run first.
+    """
+    src = Path(output_root) / "sourcedata"
+    if not src.is_dir():
+        return []
+    return sorted(
+        child.name[4:]
+        for child in src.iterdir()
+        if child.is_dir() and child.name.startswith("sub-")
+    )
+
+
 def infer_next_session(output_root: str | Path, subject: str) -> str:
     """Return the next zero-padded session number for ``subject``.
 

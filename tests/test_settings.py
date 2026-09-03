@@ -12,6 +12,7 @@ from mario_task.settings import (
     DisplaySettings,
     PathSettings,
     Settings,
+    SyncSettings,
     TaskSettings,
     TriggerSettings,
     default_settings,
@@ -299,3 +300,296 @@ def test_partial_config_falls_back_to_defaults_for_missing_keys(tmp_path: Path) 
     assert s.paths == PathSettings()
 
 
+
+# ---------------------------------------------------------------------------
+# Scanner sync
+#
+# The rule throughout: reject a configuration that cannot produce a valid
+# run, but never reject one that merely needs hardware to be plugged in —
+# mario_task.sync degrades at run time so the same config.json works at the
+# scanner and on a desk.
+# ---------------------------------------------------------------------------
+
+
+def test_sync_defaults_to_starting_immediately() -> None:
+    s = default_settings().sync
+    assert s.mode == "none"
+    assert s.backend == "none"
+    assert s.signal == ("s",)
+    assert s.port is None
+
+
+def test_sync_roundtrips_through_json(tmp_path: Path) -> None:
+    p = tmp_path / "config.json"
+    original = Settings(
+        sync=SyncSettings(
+            mode="wait", backend="serial", port="/dev/ttyUSB0",
+            signal=("5", "percent"), n_dummy_scans=2, timeout_seconds=30.0,
+        )
+    )
+    save(p, original)
+    assert load_from_file(p).sync == original.sync
+
+
+def test_a_lone_sync_signal_may_be_written_as_a_bare_string(tmp_path: Path) -> None:
+    """What anyone hand-editing config.json will type."""
+    p = tmp_path / "config.json"
+    p.write_text(
+        json.dumps(
+            {"schema_version": settings.SCHEMA_VERSION, "sync": {"mode": "wait", "signal": "t"}}
+        )
+    )
+    assert load_from_file(p).sync.signal == ("t",)
+
+
+def test_a_config_without_a_sync_section_still_loads(tmp_path: Path) -> None:
+    """Forward/backward compatibility: configs predate the sync section."""
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"schema_version": settings.SCHEMA_VERSION, "task": {}}))
+    assert load_from_file(p).sync == SyncSettings()
+
+
+def test_an_unknown_sync_mode_is_rejected() -> None:
+    with pytest.raises(ValueError, match="sync.mode"):
+        settings._validate(Settings(sync=SyncSettings(mode="maybe")))
+
+
+def test_a_backend_that_cannot_wait_is_rejected_in_wait_mode() -> None:
+    # 'lsl' can only send; waiting on it would silently never fire.
+    with pytest.raises(ValueError, match="sync.backend"):
+        settings._validate(Settings(sync=SyncSettings(mode="wait", backend="lsl")))
+
+
+def test_a_backend_that_cannot_send_is_rejected_in_send_mode() -> None:
+    with pytest.raises(ValueError, match="sync.backend"):
+        settings._validate(Settings(sync=SyncSettings(mode="send", backend="keyboard")))
+
+
+def test_an_empty_sync_signal_is_rejected_when_it_would_be_used() -> None:
+    with pytest.raises(ValueError, match="sync.signal"):
+        settings._validate(Settings(sync=SyncSettings(mode="send", signal=())))
+    # ...but mode 'none' never looks at it.
+    settings._validate(Settings(sync=SyncSettings(mode="none", signal=())))
+
+
+def test_a_missing_port_is_not_a_configuration_error() -> None:
+    """sync.configure warns and degrades, so the same config works anywhere."""
+    settings._validate(Settings(sync=SyncSettings(mode="send", backend="serial", port=None)))
+    settings._validate(Settings(sync=SyncSettings(mode="wait", backend="serial", port=None)))
+
+
+def test_negative_dummy_scans_and_zero_timeout_are_rejected() -> None:
+    with pytest.raises(ValueError, match="n_dummy_scans"):
+        settings._validate(Settings(sync=SyncSettings(n_dummy_scans=-1)))
+    with pytest.raises(ValueError, match="timeout_seconds"):
+        settings._validate(Settings(sync=SyncSettings(timeout_seconds=0)))
+    # null means "wait indefinitely", which is allowed.
+    settings._validate(Settings(sync=SyncSettings(timeout_seconds=None)))
+
+
+def test_sync_env_overrides(tmp_path: Path) -> None:
+    s = load(
+        config_path=None,
+        env={
+            "MARIO_SYNC_MODE": "wait",
+            "MARIO_SYNC_BACKEND": "keyboard",
+            "MARIO_SYNC_SIGNAL": "5, percent",
+            "MARIO_SYNC_DUMMY_SCANS": "3",
+            "MARIO_SYNC_TIMEOUT": "12.5",
+        },
+        cli_overrides=None,
+    )
+    assert s.sync.mode == "wait"
+    assert s.sync.signal == ("5", "percent")
+    assert s.sync.n_dummy_scans == 3
+    assert s.sync.timeout_seconds == 12.5
+
+
+def test_a_blank_sync_timeout_means_wait_forever() -> None:
+    s = load(config_path=None, env={"MARIO_SYNC_TIMEOUT": ""}, cli_overrides=None)
+    assert s.sync.timeout_seconds is None
+
+
+def test_an_unparseable_env_var_names_itself() -> None:
+    with pytest.raises(ValueError, match="MARIO_SYNC_DUMMY_SCANS"):
+        load(config_path=None, env={"MARIO_SYNC_DUMMY_SCANS": "lots"}, cli_overrides=None)
+
+
+def test_sync_cli_overrides_beat_config(tmp_path: Path) -> None:
+    p = tmp_path / "config.json"
+    save(p, Settings(sync=SyncSettings(mode="wait")))
+    s = load(
+        config_path=p,
+        env={},
+        cli_overrides={"sync_mode": "send", "sync_signal": ("t",), "sync_port": "/dev/ttyUSB0"},
+    )
+    assert s.sync.mode == "send"
+    assert s.sync.signal == ("t",)
+    assert s.sync.port == "/dev/ttyUSB0"
+
+
+# ---------------------------------------------------------------------------
+# Trigger params
+# ---------------------------------------------------------------------------
+
+
+def test_trigger_events_default_to_all_on() -> None:
+    ev = default_settings().triggers.events()
+    assert (ev.on_game_frame, ev.on_game_reset, ev.on_non_game_flip) == (True, True, True)
+
+
+def test_trigger_event_flags_roundtrip_through_json(tmp_path: Path) -> None:
+    p = tmp_path / "config.json"
+    save(p, Settings(triggers=TriggerSettings(on_game_frame=False, trigger_every=4)))
+    loaded = load_from_file(p)
+    assert loaded.triggers.on_game_frame is False
+    assert loaded.triggers.on_game_reset is True
+    assert loaded.triggers.trigger_every == 4
+    assert loaded.triggers.events().on_game_frame is False
+
+
+def test_trigger_env_and_cli_overrides(tmp_path: Path) -> None:
+    s = load(
+        config_path=None,
+        env={"MARIO_TRIGGER_EVERY": "5", "MARIO_TRIGGER_ON_NON_GAME_FLIP": "0"},
+        cli_overrides=None,
+    )
+    assert s.triggers.trigger_every == 5
+    assert s.triggers.on_non_game_flip is False
+
+    s = load(config_path=None, env={}, cli_overrides={"trigger_every": 2})
+    assert s.triggers.trigger_every == 2
+
+
+def test_the_retired_eeg_flag_names_still_land_on_the_trigger_fields() -> None:
+    """--eeg-backend / --eeg-port predate the rename; they must keep working."""
+    s = load(
+        config_path=None,
+        env={},
+        cli_overrides={"eeg_backend": "serial", "eeg_port": "/dev/ttyACM0"},
+    )
+    assert s.triggers.backend == "serial"
+    assert s.triggers.port == "/dev/ttyACM0"
+
+
+# ---------------------------------------------------------------------------
+# Button mapping
+#
+# key_set is positional: emulator.step() takes one boolean per entry, and
+# questionnaire.py indexes into it (4=UP .. 8=A). Both contracts are tested
+# here, because breaking either is silent at run time.
+# ---------------------------------------------------------------------------
+
+
+#: What key_set() produced before it was configurable. Hard-coded on purpose:
+#: this is the value the README documents and every existing recording used.
+HISTORIC_KEY_SET = ["z", "_", "_", "_", "up", "down", "left", "right", "x", "_", "_", "_"]
+
+
+def test_the_default_map_reproduces_the_historic_key_set() -> None:
+    """Arrows to move, Z to run, X to jump — what the README has always said."""
+    assert default_settings().input.key_set() == HISTORIC_KEY_SET
+
+
+def test_the_tasks_fallback_key_set_matches_the_settings_default() -> None:
+    """task.DEFAULT_KEY_SET is derived, not duplicated; prove it stayed put."""
+    task = pytest.importorskip("mario_task.task", reason="needs psychopy + retro")
+    assert task.DEFAULT_KEY_SET == HISTORIC_KEY_SET
+
+
+def test_key_set_puts_each_button_at_its_retro_index() -> None:
+    from mario_task.settings import InputSettings
+
+    ks = InputSettings(
+        button_map={
+            "UP": "i", "DOWN": "k", "LEFT": "j", "RIGHT": "l",
+            "A": "space", "B": "shift", "START": "return", "SELECT": "tab",
+        }
+    ).key_set()
+    # Order comes from stable_retro/cores/fceumm.json.
+    assert ks[0] == "shift"    # B
+    assert ks[2] == "tab"      # SELECT
+    assert ks[3] == "return"   # START
+    assert ks[4:8] == ["i", "k", "j", "l"]  # UP DOWN LEFT RIGHT
+    assert ks[8] == "space"    # A
+
+
+def test_the_questionnaire_navigation_follows_a_remapped_pad() -> None:
+    """questionnaire.py reads key_set[4:9]; remapping must carry through."""
+    from mario_task.settings import InputSettings
+
+    ks = InputSettings(
+        button_map={**settings.DEFAULT_BUTTON_MAP, "UP": "i", "A": "space"}
+    ).key_set()
+    assert ks[4] == "i"      # nav_up
+    assert ks[8] == "space"  # nav_submit
+
+
+def test_an_unbound_button_is_never_reported_as_pressed() -> None:
+    """START/SELECT default to blank, which must not match a real key."""
+    ks = default_settings().input.key_set()
+    assert ks[2] == settings.UNBOUND and ks[3] == settings.UNBOUND
+    # held_for does `k in pressed_keys`; no pyglet name normalises to "_".
+    assert settings.UNBOUND not in ("up", "down", "left", "right", "x", "z")
+
+
+def test_button_map_roundtrips_through_json(tmp_path: Path) -> None:
+    from mario_task.settings import InputSettings
+
+    p = tmp_path / "config.json"
+    remapped = {**settings.DEFAULT_BUTTON_MAP, "A": "space", "B": "shift"}
+    save(p, Settings(input=InputSettings(button_map=remapped)))
+    assert load_from_file(p).input.button_map == remapped
+
+
+def test_a_partial_button_map_merges_onto_the_default(tmp_path: Path) -> None:
+    """Rebinding one button must not silently unbind the other seven."""
+    p = tmp_path / "config.json"
+    p.write_text(
+        json.dumps(
+            {
+                "schema_version": settings.SCHEMA_VERSION,
+                "input": {"button_map": {"A": "space"}},
+            }
+        )
+    )
+    loaded = load_from_file(p).input
+    assert loaded.button_map["A"] == "space"
+    assert loaded.button_map["UP"] == "up"
+    assert loaded.button_map["B"] == "z"
+
+
+def test_a_config_without_an_input_section_still_loads(tmp_path: Path) -> None:
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"schema_version": settings.SCHEMA_VERSION, "task": {}}))
+    assert load_from_file(p).input.button_map == settings.DEFAULT_BUTTON_MAP
+
+
+def test_one_key_on_two_buttons_is_rejected() -> None:
+    from mario_task.settings import InputSettings
+
+    bad = {**settings.DEFAULT_BUTTON_MAP, "A": "z"}  # z is already B
+    with pytest.raises(ValueError, match="both B and A|both A and B"):
+        settings._validate(Settings(input=InputSettings(button_map=bad)))
+
+
+def test_leaving_a_playable_button_unbound_is_rejected() -> None:
+    from mario_task.settings import InputSettings
+
+    bad = {**settings.DEFAULT_BUTTON_MAP, "LEFT": ""}
+    with pytest.raises(ValueError, match=r"leaves \['LEFT'\] unbound"):
+        settings._validate(Settings(input=InputSettings(button_map=bad)))
+
+
+def test_start_and_select_may_be_left_unbound() -> None:
+    """The default, and deliberately so: a paused subject breaks segmentation."""
+    settings._validate(default_settings())
+    assert default_settings().input.button_map["START"] == ""
+
+
+def test_a_button_the_nes_does_not_have_is_rejected() -> None:
+    from mario_task.settings import InputSettings
+
+    bad = {**settings.DEFAULT_BUTTON_MAP, "TURBO": "t"}
+    with pytest.raises(ValueError, match="TURBO"):
+        settings._validate(Settings(input=InputSettings(button_map=bad)))

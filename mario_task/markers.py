@@ -18,6 +18,11 @@ Marker code scheme (single positive byte; same value on every transport):
 * Lifecycle and gameplay codes are disjoint by construction (lifecycle
   values < ``game_frame_base``, gameplay values ≥ ``game_frame_base``).
 
+Which of those events actually fires is set separately, by
+:class:`TriggerEvents` (``triggers.on_game_frame`` and friends in
+``config.json``): the codes say *what value* goes out, the events say
+*whether anything does*. Call sites ask :func:`emits`.
+
 All six numeric codes plus the modulo are user-editable via the
 :class:`TriggerCodes` dataclass — populated from ``config.json`` and
 passed to :func:`configure`. Module-level constants like
@@ -75,6 +80,24 @@ class TriggerCodes:
     game_frame_mod: int = 8
 
 
+@dataclass(frozen=True)
+class TriggerEvents:
+    """Which events actually emit a marker.
+
+    The code scheme in :class:`TriggerCodes` says *what value* each event
+    sends; this says *whether it is sent at all*. Both are set from
+    ``config.json`` under ``triggers`` and handed to :func:`configure`.
+
+    Gameplay frames are the expensive one — one marker per emulator frame,
+    60/s — so ``on_game_frame`` pairs with ``triggers.trigger_every`` to
+    thin the stream, and turning it off leaves only the lifecycle markers.
+    """
+
+    on_game_frame: bool = True
+    on_game_reset: bool = True
+    on_non_game_flip: bool = True
+
+
 # Active code scheme. Mutated by :func:`configure` (with the codes loaded
 # from config.json). The module's __getattr__ exposes the individual codes
 # under the canonical UPPERCASE names so legacy ``markers.TASK_START``
@@ -85,6 +108,11 @@ _codes: TriggerCodes = TriggerCodes()
 # trigger per N frames. The engine reads this via :func:`get_trigger_every`
 # and decides whether to call :func:`send_signal` on each step.
 _trigger_every: int = 1
+
+# Which events emit at all. Read by the engine and the task base class via
+# :func:`emits`, so a rig can silence a whole class of marker without any
+# call site learning about settings.
+_events: TriggerEvents = TriggerEvents()
 
 
 def set_codes(codes: TriggerCodes) -> None:
@@ -117,6 +145,39 @@ def set_trigger_every(n: int) -> None:
 def get_trigger_every() -> int:
     """Return the active gameplay-marker decimation factor (1 = every frame)."""
     return _trigger_every
+
+
+def set_events(events: TriggerEvents) -> None:
+    """Override which events emit a marker.
+
+    Normally :func:`configure` handles this. Exposed for tests.
+    """
+    global _events
+    _events = events
+
+
+def get_events() -> TriggerEvents:
+    """Return the active :class:`TriggerEvents`."""
+    return _events
+
+
+def emits(event: str) -> bool:
+    """Whether ``event`` should emit a marker right now.
+
+    ``event`` is one of ``"game_frame"``, ``"game_reset"``,
+    ``"non_game_flip"``. Task-start / task-stop are deliberately not
+    switchable: without them a recording cannot be segmented at all.
+
+    Raises:
+        ValueError: ``event`` is not a switchable event name.
+    """
+    try:
+        return bool(getattr(_events, f"on_{event}"))
+    except AttributeError:
+        raise ValueError(
+            f"unknown marker event {event!r}; expected one of "
+            f"'game_frame', 'game_reset', 'non_game_flip'."
+        ) from None
 
 
 def __getattr__(name: str) -> Any:
@@ -190,9 +251,11 @@ overrides this anyway by returning ``None`` from ``_eeg_marker_value``)."""
 
 
 class _Backend(Protocol):
-    """All backends implement a single :meth:`send` method."""
+    """Every backend sends a marker and releases whatever it opened."""
 
     def send(self, value: int, timestamp: float | None = None) -> None: ...
+
+    def close(self) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -236,6 +299,9 @@ class _LSLBackend:
         ts = 0.0 if timestamp is None else float(timestamp)
         self._outlet.push_sample([int(value)], ts)
 
+    def close(self) -> None:
+        self._outlet = None
+
 
 class _SerialBackend:
     """One byte per marker over a serial port. Timestamps ignored — the
@@ -249,6 +315,12 @@ class _SerialBackend:
 
     def send(self, value: int, timestamp: float | None = None) -> None:
         self._port.write((int(value) & 0xFF).to_bytes(1, byteorder="big"))
+
+    def close(self) -> None:
+        try:
+            self._port.close()
+        except Exception:  # noqa: BLE001 - teardown must never raise
+            pass
 
 
 class _ParallelBackend:
@@ -267,6 +339,9 @@ class _ParallelBackend:
 
     def send(self, value: int, timestamp: float | None = None) -> None:
         self._port.setData(int(value) & 0xFF)
+
+    def close(self) -> None:
+        pass
 
 
 class _NullBackend:
@@ -290,6 +365,9 @@ class _NullBackend:
             )
             self._warned = True
 
+    def close(self) -> None:
+        pass
+
 
 # ---------------------------------------------------------------------------
 # Module-level state & configuration
@@ -304,6 +382,7 @@ def configure(
     stream: StreamConfig | None = None,
     codes: TriggerCodes | None = None,
     trigger_every: int | None = None,
+    events: TriggerEvents | None = None,
 ) -> _Backend:
     """Pick the active marker transport. Returns the resolved backend.
 
@@ -317,6 +396,10 @@ def configure(
                  :func:`decode_marker` calls. ``None`` leaves the active
                  codes unchanged (defaults to :class:`TriggerCodes()` at
                  module import time).
+        trigger_every: Gameplay-marker decimation (1 = every emulator
+                 frame). ``None`` leaves the active value unchanged.
+        events:  :class:`TriggerEvents` saying which events emit at all.
+                 ``None`` leaves the active flags unchanged.
 
     On init failure (LSL daemon unreachable, serial port missing,
     pyparallel not installed, etc.) the function falls back to
@@ -328,6 +411,8 @@ def configure(
         set_codes(codes)
     if trigger_every is not None:
         set_trigger_every(trigger_every)
+    if events is not None:
+        set_events(events)
     backend = backend.lower()
     try:
         if backend == "lsl":
@@ -352,6 +437,27 @@ def configure(
     return _backend
 
 
+def get_backend() -> _Backend | None:
+    """The configured backend, or ``None`` if :func:`configure` hasn't run.
+
+    Used by :mod:`mario_task.sync` so one serial port can carry both the
+    scanner start signal and the event markers — opening the same device
+    twice fails on Linux.
+    """
+    return _backend
+
+
+def close() -> None:
+    """Release the backend. Idempotent."""
+    global _backend
+    if _backend is not None:
+        try:
+            _backend.close()
+        except Exception:  # noqa: BLE001 - teardown must never raise
+            pass
+    _backend = None
+
+
 def get_outlet() -> Any:
     """Return the underlying ``pylsl.StreamOutlet`` (or ``None`` for non-LSL backends).
 
@@ -370,10 +476,15 @@ def send_signal(data: int, timestamp: float | None = None) -> None:
     event time (use :func:`now` to capture it). Serial / parallel ignore
     it (the amplifier stamps on byte arrival).
     """
+    global _backend
     if _backend is None:
         configure("lsl")
     assert _backend is not None
-    _backend.send(data, timestamp=timestamp)
+    try:
+        _backend.send(data, timestamp=timestamp)
+    except Exception as exc:  # noqa: BLE001 - a dead cable must not abort a run
+        logger.warning("Marker send failed (%s); switching to null backend.", exc)
+        _backend = _NullBackend(reason=f"send failed: {exc}")
 
 
 def now() -> float:
@@ -381,14 +492,25 @@ def now() -> float:
 
     Call this *immediately* after the event of interest (e.g. right after
     ``emulator.step()``), then pass the result to :func:`send_signal`.
+
+    Falls back to a monotonic clock when pylsl is unavailable, so a rig
+    running with ``backend="null"`` and no LSL installed still gets
+    sensible timestamps.
     """
-    import pylsl  # lazy import: tests that don't touch markers don't need LSL
-    return pylsl.local_clock()
+    try:
+        import pylsl  # lazy import: tests that don't touch markers don't need LSL
+
+        return pylsl.local_clock()
+    except Exception:  # noqa: BLE001 - pylsl is optional at runtime
+        import time
+
+        return time.monotonic()
 
 
 def _reset_for_tests() -> None:
     """Drop the active backend AND reset codes to defaults. Used by tests."""
-    global _backend, _codes, _trigger_every
+    global _backend, _codes, _trigger_every, _events
     _backend = None
     _codes = TriggerCodes()
     _trigger_every = 1
+    _events = TriggerEvents()

@@ -242,3 +242,93 @@ def test_send_signal_with_no_prior_configure_uses_lazy_init(monkeypatch: pytest.
     markers._reset_for_tests()
     markers.send_signal(TASK_START)
     assert markers._backend is not None
+
+
+# ---------------------------------------------------------------------------
+# Per-event switches
+#
+# TriggerCodes says what value an event sends; TriggerEvents says whether it
+# is sent at all. Task start / stop are deliberately not switchable.
+# ---------------------------------------------------------------------------
+
+
+def test_every_event_emits_by_default() -> None:
+    assert markers.emits("game_frame")
+    assert markers.emits("game_reset")
+    assert markers.emits("non_game_flip")
+
+
+def test_set_events_silences_one_class_of_marker() -> None:
+    markers.set_events(markers.TriggerEvents(on_game_frame=False))
+    assert not markers.emits("game_frame")
+    # The others are untouched.
+    assert markers.emits("game_reset")
+
+
+def test_configure_takes_the_event_flags() -> None:
+    markers.configure(
+        backend="null", events=markers.TriggerEvents(on_non_game_flip=False)
+    )
+    assert not markers.emits("non_game_flip")
+
+
+def test_configure_without_events_leaves_the_active_flags_alone() -> None:
+    markers.set_events(markers.TriggerEvents(on_game_reset=False))
+    markers.configure(backend="null")
+    assert not markers.emits("game_reset")
+
+
+def test_an_unknown_event_name_is_a_loud_error() -> None:
+    # A typo must not read as "off" and silently drop a marker stream.
+    with pytest.raises(ValueError, match="unknown marker event"):
+        markers.emits("task_start")
+
+
+# ---------------------------------------------------------------------------
+# Backend lifetime
+# ---------------------------------------------------------------------------
+
+
+def test_get_backend_is_none_before_configure() -> None:
+    assert markers.get_backend() is None
+    markers.configure(backend="null")
+    assert markers.get_backend() is not None
+
+
+def test_close_releases_the_backend_and_is_idempotent() -> None:
+    markers.configure(backend="null")
+    markers.close()
+    markers.close()
+    assert markers.get_backend() is None
+
+
+def test_a_send_failure_mid_run_degrades_instead_of_raising(caplog) -> None:
+    class Exploding:
+        def send(self, value, timestamp=None):
+            raise OSError("cable unplugged")
+
+        def close(self):
+            pass
+
+    markers._backend = Exploding()
+    with caplog.at_level(logging.WARNING):
+        markers.send_signal(1)
+    assert "Marker send failed" in caplog.text
+    # And it stops trying: the null backend takes over.
+    assert isinstance(markers.get_backend(), markers._NullBackend)
+    markers.send_signal(1)  # no raise
+
+
+def test_now_falls_back_when_pylsl_is_missing(monkeypatch) -> None:
+    """Behaviour-only rigs have no pylsl, and sync calls now() on every one."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _no_pylsl(name, *args, **kwargs):
+        if name == "pylsl":
+            raise ImportError("no pylsl here")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_pylsl)
+    assert isinstance(markers.now(), float)
