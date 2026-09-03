@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+from conftest import import_or_skip
 
 from mario_task import settings
 from mario_task.settings import (
@@ -493,7 +494,7 @@ def test_the_default_map_reproduces_the_historic_key_set() -> None:
 
 def test_the_tasks_fallback_key_set_matches_the_settings_default() -> None:
     """task.DEFAULT_KEY_SET is derived, not duplicated; prove it stayed put."""
-    task = pytest.importorskip("mario_task.task", reason="needs psychopy + retro")
+    task = import_or_skip("mario_task.task", reason="needs psychopy + retro")
     assert task.DEFAULT_KEY_SET == HISTORIC_KEY_SET
 
 
