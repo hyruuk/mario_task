@@ -11,6 +11,7 @@ import logging
 import time
 
 import pytest
+from conftest import import_or_skip
 
 from mario_task import markers, sync
 from mario_task.settings import SyncSettings
@@ -342,7 +343,7 @@ def test_markers_backend_needs_no_port_and_does_not_degrade():
 # ---------------------------------------------------------------------------
 
 
-session = pytest.importorskip("mario_task.session", reason="needs psychopy + retro")
+session = import_or_skip("mario_task.session", reason="needs psychopy + retro")
 
 
 class RecordingTask:

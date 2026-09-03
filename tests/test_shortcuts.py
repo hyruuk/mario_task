@@ -14,10 +14,11 @@ Neither needs a window.
 from __future__ import annotations
 
 import pytest
+from conftest import import_or_skip
 
-from mario_task import session
-
-pytest.importorskip("psychopy", reason="the shortcut layer is built on psychopy")
+# session pulls in psychopy; skip (rather than error) where that cannot import,
+# e.g. the headless CI runner.
+session = import_or_skip("mario_task.session", reason="the shortcut layer is built on psychopy")
 
 import pyglet  # noqa: E402
 from psychopy import event  # noqa: E402
